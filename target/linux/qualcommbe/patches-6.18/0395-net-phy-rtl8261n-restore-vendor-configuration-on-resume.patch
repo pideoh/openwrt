@@ -1,0 +1,47 @@
+From: Til Kaiser <mail@tk154.de>
+Date: Sun, 19 Apr 2026 00:00:00 +0200
+Subject: [PATCH] net: phy: rtl8261n: restore vendor configuration on resume
+
+On some IPQ5332 + RTL8261N setups, the initial link comes up after boot,
+but a later netdev down/up cycle leaves the PHY flapping and failing to
+re-establish a stable link.
+
+A plain netdev reopen goes through phy_stop()/phy_start(), which suspends
+and resumes the PHY. After returning the PHY to normal power state, the
+RTL8261N vendor initialization needs to be applied again before link
+training restarts.
+
+Restore the vendor configuration from the resume path by calling
+rtkphy_config_init() after power-up.
+
+Signed-off-by: Til Kaiser <mail@tk154.de>
+---
+ drivers/net/phy/rtl8261n/rtk_phy.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/phy/rtl8261n/rtk_phy.c
++++ b/drivers/net/phy/rtl8261n/rtk_phy.c
+@@ -161,11 +161,20 @@ static int rtkphy_c45_suspend(struct phy
+ 
+ static int rtkphy_c45_resume(struct phy_device *phydev)
+ {
++    int ret;
++
+ #ifndef CONFIG_MACH_REALTEK_RTL
+-    return rtk_phylib_c45_power_normal(phydev);
+-#else
+-    return 0;
++    ret = rtk_phylib_c45_power_normal(phydev);
++    if (ret < 0)
++        return ret;
+ #endif
++
++    /* Restore the vendor configuration after powering the PHY back up. */
++    ret = rtkphy_config_init(phydev);
++    if (ret < 0)
++        return ret;
++
++    return 0;
+ }
+ 
+ static int rtkphy_c45_config_aneg(struct phy_device *phydev)
