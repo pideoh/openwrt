@@ -10,7 +10,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=perf
 PKG_VERSION:=$(LINUX_VERSION)
-PKG_RELEASE:=7
+PKG_RELEASE:=8
 
 PKG_BUILD_FLAGS:=no-mips16 no-lto
 PKG_BUILD_PARALLEL:=1
@@ -42,6 +42,9 @@ HOST_CFLAGS += -I$(LINUX_DIR)/tools/include
 
 TARGET_LDFLAGS += $(INTL_LDFLAGS)
 
+# OpenWrt builds target elfutils without zstd. perf 6.18's libelf-zstd probe
+# only checks whether the zstd compression API is available, so keep it off
+# while perf's own zstd support is disabled.
 MAKE_FLAGS = \
 	ARCH="$(LINUX_KARCH)" \
 	NO_LIBPERL=1 \
@@ -56,6 +59,7 @@ MAKE_FLAGS = \
 	NO_LIBCRYPTO=1 \
 	NO_LIBUNWIND=1 \
 	NO_LIBZSTD=1 \
+	feature-libelf-zstd=0 \
 	NO_LIBCAP=1 \
 	NO_JEVENTS=1 \
 	NO_SHELLCHECK=1 \
