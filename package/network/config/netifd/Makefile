@@ -14,6 +14,9 @@ PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=
 
 PKG_BUILD_FLAGS:=lto
+PKG_CONFIG_DEPENDS:=CONFIG_NETIFD_DEVLINK_PORT_SPLIT
+
+USE_SOURCE_DIR:=$(TOPDIR)/../netifd
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
@@ -24,6 +27,16 @@ define Package/netifd
   DEPENDS:=+libuci +libnl-tiny +libubus +ubus +ubusd +jshn +libubox +libudebug \
 	+ucode +ucode-mod-fs +ucode-mod-ubus +ucode-mod-uloop +ucode-mod-uci
   TITLE:=OpenWrt Network Interface Configuration Daemon
+endef
+
+define Package/netifd/config
+	config NETIFD_DEVLINK_PORT_SPLIT
+		bool "Enable devlink port split support"
+		default n
+		help
+		  Enable support for configuring devlink port splitting from UCI
+		  device sections using option split. This is only useful on the
+		  small set of NIC/switch drivers that implement devlink port split.
 endef
 
 define Package/netifd/conffiles
@@ -37,7 +50,8 @@ TARGET_CFLAGS += \
 
 CMAKE_OPTIONS += \
 	-DLIBNL_LIBS=-lnl-tiny \
-	-DDEBUG=1
+	-DDEBUG=1 \
+	-DDEVLINK_PORT_SPLIT=$(if $(CONFIG_NETIFD_DEVLINK_PORT_SPLIT),ON,OFF)
 
 define Package/netifd/install
 	$(INSTALL_DIR) $(1)/sbin
