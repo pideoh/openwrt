@@ -1,0 +1,53 @@
+From: Til Kaiser <mail@tk1454.de>
+Date: Wed, 17 Jun 2026 18:00:00 +0200
+Subject: [PATCH] net: pcs: airoha: validate USXGMII RX lock before trusting it
+
+On AN7581, the shallow USXGMII PCS RX link status can report link up
+while the BASE-R status still lacks block lock and RX link. In that
+state the later USXGMII AN status reads as zero, so phylink never sees
+the link even though the external PHY has copper link.
+
+Treat that state like the existing bad-lock case: if the PMA still sees
+RX signal, reset the CDR and let phylink poll again later.
+
+Signed-off-by: Til Kaiser <mail@tk1454.de>
+---
+ drivers/net/pcs/airoha/pcs-an7581.c | 31 ++++++++++++++++++++++++++++++-----
+ 1 file changed, 26 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/pcs/airoha/pcs-an7581.c
++++ b/drivers/net/pcs/airoha/pcs-an7581.c
+@@ -2067,14 +2067,31 @@ static bool an7581_pcs_have_rx_signal(st
+ 	return count >= 4;
+ }
+ 
++static bool an7581_pcs_usxgmii_has_block_lock(struct airoha_pcs_priv *priv,
++					      int index)
++{
++	struct airoha_pcs_maps *maps = &priv->maps[index];
++	u32 base_r;
++
++	regmap_read(maps->usxgmii_pcs,
++		    AIROHA_PCS_USXGMII_BASE_R_10GB_T_PCS_STUS_1, &base_r);
++
++	return (base_r & AIROHA_PCS_USXGMII_PCS_BLK_LK) &&
++	       (base_r & AIROHA_PCS_USXGMII_RX_LINK_STUS);
++}
++
+ int an7581_pcs_rxlock_workaround(struct airoha_pcs_priv *priv, int index)
+ {
+ 	struct airoha_pcs_maps *maps = &priv->maps[index];
++	bool pcs_up;
+ 	u32 val;
+ 
+-	/* Check if PCS is UP or Down */
++	/* Check if PCS is UP or Down. Also handle the partial-lock case
++	 * where PCS_STUS_1 reports RX link up, but BASE-R has no block lock.
++	 */
+ 	regmap_read(maps->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_STUS_1, &val);
+-	if (val & AIROHA_PCS_USXGMII_PCS_RX_LINK_STATUS_UP)
++	pcs_up = val & AIROHA_PCS_USXGMII_PCS_RX_LINK_STATUS_UP;
++	if (pcs_up && an7581_pcs_usxgmii_has_block_lock(priv, index))
+ 		return 0;
+ 
+ 	/* Validate if this is consistent with RX SigDet module */
