@@ -1,0 +1,63 @@
+From: TODO Your Name <todo@example.org>
+Date: Sat, 30 Aug 2026 00:00:00 +0200
+Subject: [PATCH] mtd: rawnand: qcom: add IPQ5332 support
+
+IPQ5332 embeds the same QPIC block as IPQ9574. Upstream's ipq5332.dtsi
+does not yet describe that block at all: unlike IPQ9574, there is no
+"qcom,ipq5332-snand" node in mainline for this SoC, so this raw NAND
+controller is added fresh at 0x079b0000 with no pre-existing devicetree
+node to conflict with. Boards may instead wire that block to a serial
+(SPI) NAND chip, in which case a future "qcom,ipq5332-snand" node would
+be handled by spi-qpic-snand rather than by this driver; the Xiaomi
+BE3600 Pro (RN01) is not such a board: it has a single 8-bit parallel
+NAND chip on CS0, 4-bit BCH ECC with a 512 byte step size, which the
+existing ECC_BCH_4BIT/ECC_BCH_8BIT capability mask already covers, and
+is handled by this driver via the "qcom,ipq5332-nand" compatible.
+
+The register layout matches IPQ8074 (device command registers at
+0x7000, BAM at offset 0x30000, NAND controller part of QPIC), with one
+difference: this is a QPIC v2 block, so the last codeword of a page is
+described by the separate NAND_READ_LOCATION_LAST_CW_n registers and
+the legacy EBI2 ECC buffer configuration register is gone. That is the
+same hardware behaviour spi-qpic-snand relies on unconditionally for
+the IPQ9574/IPQ5332 QPIC, so add a dedicated props struct with
+qpic_version2 set instead of reusing ipq8074_nandc_props.
+
+has_onfi_read_op is deliberately left unset: the driver then keeps
+programming NAND_DEV_CMD1/NAND_DEV_CMD_VLD around the ONFI parameter
+page read, which works on this block as well.
+
+Signed-off-by: TODO Your Name <todo@example.org>
+---
+ drivers/mtd/nand/raw/qcom_nandc.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+--- a/drivers/mtd/nand/raw/qcom_nandc.c
++++ b/drivers/mtd/nand/raw/qcom_nandc.c
+@@ -2373,6 +2373,15 @@ static const struct qcom_nandc_props ipq
+ 	.bam_offset = 0x30000,
+ };
+ 
++static const struct qcom_nandc_props ipq5332_nandc_props = {
++	.ecc_modes = (ECC_BCH_4BIT | ECC_BCH_8BIT),
++	.supports_bam = true,
++	.nandc_part_of_qpic = true,
++	.qpic_version2 = true,
++	.dev_cmd_reg_start = 0x7000,
++	.bam_offset = 0x30000,
++};
++
+ static const struct qcom_nandc_props ipq8074_nandc_props = {
+ 	.ecc_modes = (ECC_BCH_4BIT | ECC_BCH_8BIT),
+ 	.supports_bam = true,
+@@ -2413,6 +2422,10 @@ static const struct of_device_id qcom_na
+ 		.compatible = "qcom,ipq4019-nand",
+ 		.data = &ipq4019_nandc_props,
+ 	},
++	{
++		.compatible = "qcom,ipq5332-nand",
++		.data = &ipq5332_nandc_props,
++	},
+ 	{
+ 		.compatible = "qcom,ipq6018-nand",
+ 		.data = &ipq8074_nandc_props,

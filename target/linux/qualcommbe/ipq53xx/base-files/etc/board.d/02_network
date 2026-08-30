@@ -14,6 +14,17 @@ ipq53xx_setup_interfaces()
 	ubnt,u7-pro-xgs)
 		ucidef_set_interface_lan "lan"
 		;;
+	xiaomi,rn01)
+		# Vendor DT has a 2-port PPE switch: dp1 (qcom,id = 1) is WAN,
+		# dp2 (qcom,id = 2) is LAN. ipq5332-rn01.dts labels those dp nodes
+		# "wan"/"lan" (singular, no trailing digit). For boards with
+		# exactly one LAN and one WAN port, that's the prevailing
+		# convention across board.d/02_network (this file's own
+		# ubnt,u7-pro-xgs case, and single-LAN cases in qualcommax's
+		# ipq50xx/ipq807x/ipq60xx) -- lanN/wanN numbering is only used
+		# when there are multiple LAN (or WAN) ports to enumerate.
+		ucidef_set_interfaces_lan_wan "lan" "wan"
+		;;
 	*)
 		echo "Unsupported hardware. Network interfaces not initialized"
 		;;
@@ -28,6 +39,15 @@ ipq53xx_setup_wlan()
 	ubnt,u7-pro-xgs)
 		ucidef_add_wlan "soc@0/18000000.pcie/pci0001:00/0001:00:00.0/0001:01:00.0" \
 			"soc@0/10000000.pcie/pci0002:00/0002:00:00.0/0002:01:00.0"
+		;;
+	xiaomi,rn01)
+		# TODO: unlike ubnt,u7-pro-xgs, RN01's two radios (wifi@c0000000
+		# qcom,ipq5332-wifi and wifi4@f00000 qcn6432, both on-chip
+		# AHB/multipd, not PCIe) don't have a PCI-domain phy path to give
+		# ucidef_add_wlan. Confirm the actual /sys/class/ieee80211/phyN
+		# path (or of_node path ath12k exposes for an AHB device) once
+		# WiFi actually probes and boots, then add the ucidef_add_wlan
+		# call here -- do not guess a fake PCI-style path.
 		;;
 	esac
 }

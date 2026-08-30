@@ -1,0 +1,105 @@
+From: TODO Your Name <todo@example.org>
+Date: Sat, 30 Aug 2026 00:00:00 +0200
+Subject: [PATCH] arm64: dts: qcom: ipq5332: add QPIC BAM and raw NAND
+ controller nodes
+
+The QPIC block at 0x079b0000 can drive either a serial (SPI) NAND chip
+or a raw parallel NAND chip, depending on how the board is wired.
+Upstream does not currently describe the serial flavour
+("qcom,ipq5332-snand" bound to spi-qpic-snand) for this SoC at all, so
+there is no pre-existing devicetree node at this address to reuse or
+conflict with. Boards such as the Xiaomi BE3600 Pro (RN01) populate a
+raw parallel NAND chip, which is driven by qcom_nandc.c through the
+"qcom,ipq5332-nand" compatible; this adds that node standalone.
+
+The clocks are the three QPIC clocks, named after the raw NAND
+convention ("core", "aon", "io_macro"). qcom_nandc.c only requests
+"core" and "aon"; "io_macro" is described for completeness and for a
+future IO macro rate implementation.
+
+Raw mode uses four QPIC BAM pipes: tx, rx, cmd and an additional status
+channel. The QPIC block has its own dedicated BAM at 0x07984000,
+separate from the shared BLSP1 BAM (blsp_dma) at 0x07884000 that the
+other on-chip UART/SPI/I2C peripherals use -- confirmed against the
+vendor device tree's real register/clock/interrupt values for this
+board. That dedicated BAM is not yet described in upstream ipq5332.dtsi
+at this kernel version either (the same "landed in a later point
+release than 6.18.44" situation as the missing snand node above), so
+this patch adds it as qpic_bam alongside the raw NAND node. Since
+qpic_bam is its own independent BAM instance with its own pipe
+numbering, pipes 0-3 here do not collide with anything -- they are
+unrelated to blsp_dma's pipes 0-9 used by the shared-BAM peripherals
+elsewhere in this file.
+
+The NAND chip description (ECC strength/step size and bus width, all
+matching the downstream device tree) is added as nandcs@0; the
+partition table is board specific and lives in the board device tree.
+
+Signed-off-by: TODO Your Name <todo@example.org>
+---
+ arch/arm64/boot/dts/qcom/ipq5332.dtsi | 54 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 54 insertions(+)
+
+--- a/arch/arm64/boot/dts/qcom/ipq5332.dtsi
++++ b/arch/arm64/boot/dts/qcom/ipq5332.dtsi
+@@ -687,6 +687,60 @@
+ 			};
+ 		};
+ 
++		qpic_bam: dma-controller@7984000 {
++			compatible = "qcom,bam-v1.7.4", "qcom,bam-v1.7.0";
++			reg = <0x07984000 0x1c000>;
++			interrupts = <GIC_SPI 66 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&gcc GCC_QPIC_AHB_CLK>;
++			clock-names = "bam_clk";
++			#dma-cells = <1>;
++			qcom,ee = <0>;
++			status = "disabled";
++		};
++
++		/*
++		 * The QPIC block at 0x079b0000 can drive either a serial
++		 * (SPI) NAND chip or a raw parallel NAND chip, depending on
++		 * how the board is wired. Upstream does not currently
++		 * describe the serial flavour for this SoC, so this raw NAND
++		 * node is added standalone -- there is no pre-existing
++		 * devicetree node at this address to conflict with.
++		 */
++		qpic_nand_raw: nand@79b0000 {
++			compatible = "qcom,ipq5332-nand";
++			reg = <0x079b0000 0x10000>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			clocks = <&gcc GCC_QPIC_CLK>,
++				 <&gcc GCC_QPIC_AHB_CLK>,
++				 <&gcc GCC_QPIC_IO_MACRO_CLK>;
++			clock-names = "core",
++				      "aon",
++				      "io_macro";
++
++			dmas = <&qpic_bam 0>,
++			       <&qpic_bam 1>,
++			       <&qpic_bam 2>,
++			       <&qpic_bam 3>;
++			dma-names = "tx",
++				    "rx",
++				    "cmd",
++				    "sts";
++
++			status = "disabled";
++
++			nandcs@0 {
++				reg = <0>;
++				#address-cells = <1>;
++				#size-cells = <1>;
++
++				nand-ecc-strength = <4>;
++				nand-ecc-step-size = <512>;
++				nand-bus-width = <8>;
++			};
++		};
++
+ 		usb: usb@8af8800 {
+ 			compatible = "qcom,ipq5332-dwc3", "qcom,dwc3";
+ 			reg = <0x08af8800 0x400>;

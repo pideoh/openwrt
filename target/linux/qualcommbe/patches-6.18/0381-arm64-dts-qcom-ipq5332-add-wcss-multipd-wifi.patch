@@ -1,0 +1,385 @@
+From: OpenWrt RN01 port <nobody@openwrt.org>
+Date: Sat, 30 Aug 2026 00:00:00 +0000
+Subject: [PATCH] arm64: dts: qcom: ipq5332: add wcss multipd + wifi nodes
+
+IPQ5332 runs its Wi-Fi firmware on an on-SoC Hexagon (Q6) using the
+multi protection domain (multipd) model: a root PD (q6_fw0) plus one
+user PD per radio.  Add the pieces the multipd remoteproc driver
+(qcom,ipq5332-q6-mpd) and the ath12k AHB driver (qcom,ipq5332-wifi)
+need:
+
+ - the wcss smp2p edge (master-kernel/slave-kernel entries) used for
+   fatal/ready/spawn/stop handshakes with the Q6,
+ - the root remoteproc@d100000 node with its glink-edge and the two
+   user PD child nodes pd-1 (AHB radio) and pd-2 (companion radio),
+ - the Q6/WCSS reserved-memory carve-outs (q6 region, m3 dump, caldb,
+   MLO global memory),
+ - wifi0, the internal 2.4 GHz AHB radio, and wifi1, the QCN6432
+   companion radio.
+
+All register addresses, GIC SPI numbers, smp2p bit indices and reserved
+memory offsets are transcribed from the vendor device tree of a shipping
+IPQ5332 board (Xiaomi RN01).  Everything is left disabled; boards opt in.
+
+Signed-off-by: OpenWrt RN01 port <nobody@openwrt.org>
+---
+--- a/arch/arm64/boot/dts/qcom/ipq5332.dtsi
++++ b/arch/arm64/boot/dts/qcom/ipq5332.dtsi
+@@ -158,6 +158,55 @@
+ 			no-map;
+ 
+ 			hwlocks = <&tcsr_mutex 3>;
++		};
++
++		/*
++		 * Q6/WCSS carve-outs.  The layout below is transcribed from the
++		 * vendor device tree of a 512 MiB IPQ5332 board; q6_region is
++		 * the umbrella region the root PD loads its code/data into and
++		 * it deliberately overlaps q6_ipq5332_data, exactly as the
++		 * vendor DT does (the per-radio regions are sub-ranges of the
++		 * Q6 window).  Boards with a different DRAM size or a single
++		 * radio should override these.
++		 */
++		q6_region: q6-region@4a900000 {
++			reg = <0x0 0x4a900000 0x0 0x2100000>;
++			no-map;
++		};
++
++		q6_ipq5332_data: q6-ipq5332-data@4bd00000 {
++			reg = <0x0 0x4bd00000 0x0 0xd00000>;
++			no-map;
++		};
++
++		m3_dump: m3-dump@4ca00000 {
++			reg = <0x0 0x4ca00000 0x0 0x100000>;
++			no-map;
++		};
++
++		q6_caldb: q6-caldb@4cb00000 {
++			reg = <0x0 0x4cb00000 0x0 0x200000>;
++			no-map;
++		};
++
++		q6_qcn6432_data: q6-qcn6432-data@4ce00000 {
++			reg = <0x0 0x4ce00000 0x0 0xe00000>;
++			no-map;
++		};
++
++		m3_dump_qcn6432: m3-dump-qcn6432@4dc00000 {
++			reg = <0x0 0x4dc00000 0x0 0x100000>;
++			no-map;
++		};
++
++		q6_caldb_qcn6432: q6-caldb-qcn6432@4dd00000 {
++			reg = <0x0 0x4dd00000 0x0 0x200000>;
++			no-map;
++		};
++
++		mlo_global_mem: mlo-global-mem@4e000000 {
++			reg = <0x0 0x4e000000 0x0 0x700000>;
++			no-map;
+ 		};
+ 	};
+ 
+@@ -653,7 +702,213 @@
+ 				interrupts = <GIC_SPI 14 IRQ_TYPE_LEVEL_HIGH>;
+ 				frame-number = <6>;
+ 				status = "disabled";
++			};
++		};
++
++		wifi0: wifi@c000000 {
++			compatible = "qcom,ipq5332-wifi";
++			reg = <0x0c000000 0x1000000>;
++
++			clocks = <&gcc GCC_XO_CLK>;
++			clock-names = "xo";
++
++			interrupts-extended = <&wcss_smp2p_in 8 IRQ_TYPE_NONE>,
++					      <&wcss_smp2p_in 9 IRQ_TYPE_NONE>,
++					      <&wcss_smp2p_in 12 IRQ_TYPE_NONE>,
++					      <&wcss_smp2p_in 11 IRQ_TYPE_NONE>,
++					      <&intc GIC_SPI 559 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 560 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 561 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 422 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 423 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 424 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 425 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 426 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 427 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 428 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 429 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 430 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 431 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 432 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 433 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 491 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 495 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 493 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 544 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 457 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 466 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 497 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 454 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 453 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 452 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 451 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 488 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 488 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 484 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 554 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 554 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 549 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 507 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 500 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 499 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 498 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 450 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 449 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 448 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 447 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 543 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 486 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 486 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 482 IRQ_TYPE_EDGE_RISING>,
++					      <&intc GIC_SPI 419 IRQ_TYPE_EDGE_RISING>;
++			interrupt-names = "fatal",
++					  "ready",
++					  "spawn",
++					  "stop-ack",
++					  "misc-pulse1",
++					  "misc-latch",
++					  "sw-exception",
++					  "ce0",
++					  "ce1",
++					  "ce2",
++					  "ce3",
++					  "ce4",
++					  "ce5",
++					  "ce6",
++					  "ce7",
++					  "ce8",
++					  "ce9",
++					  "ce10",
++					  "ce11",
++					  "host2wbm-desc-feed",
++					  "host2reo-re-injection",
++					  "host2reo-command",
++					  "host2rxdma-monitor-ring1",
++					  "reo2ost-exception",
++					  "wbm2host-rx-release",
++					  "reo2host-status",
++					  "reo2host-destination-ring4",
++					  "reo2host-destination-ring3",
++					  "reo2host-destination-ring2",
++					  "reo2host-destination-ring1",
++					  "rxdma2host-monitor-destination-mac3",
++					  "rxdma2host-monitor-destination-mac2",
++					  "rxdma2host-monitor-destination-mac1",
++					  "host2rxdma-host-buf-ring-mac3",
++					  "host2rxdma-host-buf-ring-mac2",
++					  "host2rxdma-host-buf-ring-mac1",
++					  "host2tcl-input-ring4",
++					  "host2tcl-input-ring3",
++					  "host2tcl-input-ring2",
++					  "host2tcl-input-ring1",
++					  "wbm2host-tx-completions-ring4",
++					  "wbm2host-tx-completions-ring3",
++					  "wbm2host-tx-completions-ring2",
++					  "wbm2host-tx-completions-ring1",
++					  "host2tx-monitor-ring1",
++					  "txmon2host-monitor-destination-mac3",
++					  "txmon2host-monitor-destination-mac2",
++					  "txmon2host-monitor-destination-mac1",
++					  "umac-reset";
++
++			memory-region = <&q6_ipq5332_data>,
++					<&m3_dump>,
++					<&q6_caldb>,
++					<&mlo_global_mem>;
++			memory-region-names = "q6-region",
++					      "m3-dump",
++					      "q6-caldb",
++					      "mlo-global-mem";
++
++			qcom,rproc = <&q6_wcss_pd1>;
++			qcom,smem-states = <&wcss_smp2p_out 8>,
++					   <&wcss_smp2p_out 9>,
++					   <&wcss_smp2p_out 10>;
++			qcom,smem-state-names = "shutdown",
++						"stop",
++						"spawn";
++
++			status = "disabled";
++		};
++
++		q6v5_wcss: remoteproc@d100000 {
++			compatible = "qcom,ipq5332-q6-mpd";
++			reg = <0x0d100000 0x4040>;
++
++			firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw0.mdt",
++					"ath12k/IPQ5332/hw1.0/iu_fw.mdt";
++
++			interrupts-extended = <&intc GIC_SPI 421 IRQ_TYPE_EDGE_RISING>,
++					      <&wcss_smp2p_in 0 IRQ_TYPE_NONE>,
++					      <&wcss_smp2p_in 1 IRQ_TYPE_NONE>,
++					      <&wcss_smp2p_in 2 IRQ_TYPE_NONE>,
++					      <&wcss_smp2p_in 3 IRQ_TYPE_NONE>;
++			interrupt-names = "wdog",
++					  "fatal",
++					  "ready",
++					  "handover",
++					  "stop-ack";
++
++			qcom,smem-states = <&wcss_smp2p_out 0>,
++					   <&wcss_smp2p_out 1>;
++			qcom,smem-state-names = "shutdown",
++						"stop";
++
++			memory-region = <&q6_region>;
++
++			/* User PD boot info blob passed to the root PD (v2) */
++			boot-args = <0x01 0x04 0x03 0x01 0x2f 0x02>;
++
++			status = "disabled";
++
++			glink-edge {
++				interrupts = <GIC_SPI 417 IRQ_TYPE_EDGE_RISING>;
++				label = "rtr";
++				qcom,remote-pid = <1>;
++				mboxes = <&apcs_glb 8>;
+ 			};
++
++			/* AHB attached radio (internal 2.4 GHz QCA5332 MAC) */
++			q6_wcss_pd1: pd-1 {
++				firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw1.mdt";
++
++				interrupts-extended = <&wcss_smp2p_in 8 IRQ_TYPE_NONE>,
++						      <&wcss_smp2p_in 9 IRQ_TYPE_NONE>,
++						      <&wcss_smp2p_in 12 IRQ_TYPE_NONE>,
++						      <&wcss_smp2p_in 11 IRQ_TYPE_NONE>;
++				interrupt-names = "fatal",
++						  "ready",
++						  "spawn-ack",
++						  "stop-ack";
++
++				qcom,smem-states = <&wcss_smp2p_out 8>,
++						   <&wcss_smp2p_out 9>,
++						   <&wcss_smp2p_out 10>;
++				qcom,smem-state-names = "shutdown",
++							"stop",
++							"spawn";
++			};
++
++			/* Companion radio PD (QCN6432 5 GHz on this SoC) */
++			q6_wcss_pd2: pd-2 {
++				firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw2.mdt";
++
++				interrupts-extended = <&wcss_smp2p_in 16 IRQ_TYPE_NONE>,
++						      <&wcss_smp2p_in 17 IRQ_TYPE_NONE>,
++						      <&wcss_smp2p_in 20 IRQ_TYPE_NONE>,
++						      <&wcss_smp2p_in 19 IRQ_TYPE_NONE>;
++				interrupt-names = "fatal",
++						  "ready",
++						  "spawn-ack",
++						  "stop-ack";
++
++				qcom,smem-states = <&wcss_smp2p_out 16>,
++						   <&wcss_smp2p_out 17>,
++						   <&wcss_smp2p_out 18>;
++				qcom,smem-state-names = "shutdown",
++							"stop",
++							"spawn";
++			};
+ 		};
+ 
+ 		pcie1: pcie@18000000 {
+@@ -863,6 +1118,87 @@
+ 		};
+ 	};
+ 
++	/*
++	 * Second (5 GHz) radio.  On IPQ5332 designs this is a QCN6432
++	 * companion die whose firmware runs in user PD 2 on the SoC Q6.
++	 * The vendor DT node (wifi4@f00000, compatible
++	 * "qcom,cnss-qcn6432"/"qcom,qcn6432-wifi") carries NO reg
++	 * window - the host never touches the radio through MMIO, it
++	 * only sees the shared memory regions plus a single umac-reset
++	 * SPI - and it exposes no CE/ring interrupts either (those are
++	 * MSIs described downstream by "interrupt-bmap = <0x100510>",
++	 * msi-parent = <&v2m0>).
++	 *
++	 * TODO: mainline ath12k has no QCN6432 AHB hw_params entry yet
++	 * and the qcom,ipq5332-wifi binding requires reg plus the full
++	 * 49 entry interrupt list, so this node is intentionally
++	 * incomplete and left disabled.  Fill in reg/interrupts once
++	 * QCN6432 AHB support lands.
++	 */
++	wifi1: wifi-qcn6432 {
++		compatible = "qcom,ipq5332-wifi";
++
++		clocks = <&gcc GCC_XO_CLK>;
++		clock-names = "xo";
++
++		interrupts-extended = <&wcss_smp2p_in 16 IRQ_TYPE_NONE>,
++				      <&wcss_smp2p_in 17 IRQ_TYPE_NONE>,
++				      <&wcss_smp2p_in 20 IRQ_TYPE_NONE>,
++				      <&wcss_smp2p_in 19 IRQ_TYPE_NONE>,
++				      <&intc GIC_SPI 410 IRQ_TYPE_EDGE_RISING>;
++		interrupt-names = "fatal",
++				  "ready",
++				  "spawn",
++				  "stop-ack",
++				  "umac-reset";
++
++		memory-region = <&q6_qcn6432_data>,
++				<&m3_dump_qcn6432>,
++				<&q6_caldb_qcn6432>,
++				<&mlo_global_mem>;
++		memory-region-names = "q6-region",
++				      "m3-dump",
++				      "q6-caldb",
++				      "mlo-global-mem";
++
++		qcom,rproc = <&q6_wcss_pd2>;
++		qcom,smem-states = <&wcss_smp2p_out 16>,
++				   <&wcss_smp2p_out 17>,
++				   <&wcss_smp2p_out 18>;
++		qcom,smem-state-names = "shutdown",
++					"stop",
++					"spawn";
++
++		status = "disabled";
++	};
++
++	smp2p-wcss {
++		compatible = "qcom,smp2p";
++		qcom,smem = <435>, <428>;
++
++		interrupt-parent = <&intc>;
++		interrupts = <GIC_SPI 418 IRQ_TYPE_EDGE_RISING>;
++
++		mboxes = <&apcs_glb 9>;
++
++		qcom,local-pid = <0>;
++		qcom,remote-pid = <1>;
++
++		wcss_smp2p_out: master-kernel {
++			qcom,entry-name = "master-kernel";
++			qcom,smp2p-feature-ssr-ack;
++
++			#qcom,smem-state-cells = <1>;
++		};
++
++		wcss_smp2p_in: slave-kernel {
++			qcom,entry-name = "slave-kernel";
++
++			interrupt-controller;
++			#interrupt-cells = <2>;
++		};
++	};
++
+ 	thermal-zones {
+ 		rfa-0-thermal {
+ 			thermal-sensors = <&tsens 11>;

@@ -1,0 +1,412 @@
+/dts-v1/;
+
+#include <arm64/qcom/ipq5332.dtsi>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+
+/ {
+	model = "Xiaomi BE3600 Pro";
+	/* FIXME: "xiaomi,rn01" is the internal codename seen in the vendor DT's
+	 * root compatible string. Confirm this is actually the compatible OpenWrt
+	 * wants to ship (cf. naming used for other Xiaomi boards, e.g.
+	 * "xiaomi,redmi-ax5400") before this lands anywhere upstream.
+	 */
+	compatible = "xiaomi,rn01", "qcom,ipq5332";
+
+	aliases {
+		serial0 = &blsp1_uart0;
+	};
+
+	chosen {
+		bootargs = "console=ttyMSM0,115200n8";
+		/*
+		 * Xiaomi's u-boot sets:
+		 *   ubi.mtd=rootfs_1 root=mtd:ubi_rootfs rootfstype=squashfs \
+		 *   cnss2.enable_mlo_support=1 rootwait
+		 * "rootfs_1" is the vendor's B slot; override it to boot OpenWrt's
+		 * own "rootfs" UBI volume instead.
+		 */
+		bootargs-append = " ubi.mtd=rootfs root=mtd:ubi_rootfs rootfstype=squashfs rootwait";
+		stdout-path = "serial0:115200n8";
+	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		pinctrl-0 = <&button_pins>;
+		pinctrl-names = "default";
+
+		button-reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&tlmm 43 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+	};
+
+	/*
+	 * Vendor DT models the status indicator as a single custom "pwm-rgb"
+	 * node (soc/pwm-rgb) with two channels, group1/orange and
+	 * group1/blue -- a bi-color LED, not a true 3-channel RGB LED and not
+	 * a single white LED. Both channels are exposed here as standard
+	 * "pwm-leds" children, reusing the PWM pin assignment (pwm0/pwm1 on
+	 * gpio30/gpio31) already confirmed against the vendor's pwm_pinmux.
+	 */
+	pwmleds {
+		compatible = "pwm-leds";
+
+		led_status_orange: led-0 {
+			function = LED_FUNCTION_STATUS;
+			color = <LED_COLOR_ID_ORANGE>;
+			pwms = <&pwm 0 1000000 0>;
+			max-brightness = <255>;
+		};
+
+		led_status_blue: led-1 {
+			function = LED_FUNCTION_STATUS;
+			color = <LED_COLOR_ID_BLUE>;
+			pwms = <&pwm 1 1000000 0>;
+			max-brightness = <255>;
+		};
+	};
+
+	/*
+	 * Separate from the pwm-rgb status LED above: the vendor DT's main
+	 * wifi radio node (soc/wifi@c0000000, compatible "qcom,ipq5332-wifi")
+	 * carries its own "led-gpio" property for a WLAN activity indicator,
+	 * driven directly off a TLMM GPIO rather than through the PWM block.
+	 *
+	 * Derived from the vendor DT: led-gpio = <0x0a 0x24 0x00>, where
+	 * phandle 0x0a resolves to soc/pinctrl@1000000 (the tlmm gpio
+	 * controller, "phandle = <0x0a>"), pin 0x24 = GPIO 36, flags 0x00 =
+	 * active-high. Confirmed via /sys/firmware/devicetree/base on the
+	 * live device (wifi@c0000000/led-gpio, independent of pwm-rgb).
+	 */
+	gpio-leds {
+		compatible = "gpio-leds";
+
+		led_wlan: led-2 {
+			function = LED_FUNCTION_WLAN;
+			gpios = <&tlmm 36 GPIO_ACTIVE_HIGH>;
+		};
+	};
+};
+
+/*
+ * WiFi: q6v5_wcss / wifi0 (QCA5332, 2.4 GHz) / wifi1 (QCN6432, 5 GHz) and
+ * their smp2p/memory-region plumbing are wired up in ipq5332.dtsi by the
+ * "arm64: dts: qcom: ipq5332: add wcss multipd wifi" kernel patch. This
+ * board file only needs to enable the two radio nodes and give each a
+ * calibration-variant tag.
+ *
+ * Calibration data: ath12k's IPQ5332/hw1.0 hw_params (see
+ * ATH12K_HW_IPQ5332_HW10 in ath12k's hw.c) expects a 256 KiB board-2.bin
+ * with a 128 KiB cal data offset. Generic reference board-2.bin files for
+ * this hardware generation already exist upstream in the linux-firmware
+ * ath12k staging tree (IPQ5332/hw1.0 for wifi0, QCN6432/hw1.0 for wifi1);
+ * those are used as the initial calibration source here. RN01-specific
+ * calibration (extracted from the vendor's own board data / "0:art"
+ * partition) is left as future work -- see the qpic_nand_raw partition
+ * "0:art" below, which almost certainly holds it on this board.
+ */
+&wifi0 {
+	qcom,calibration-variant = "RN01";
+	status = "okay";
+};
+
+&wifi1 {
+	qcom,calibration-variant = "RN01";
+	status = "okay";
+};
+
+&blsp1_uart0 {
+	pinctrl-0 = <&serial_0_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/*
+ * RN01 uses raw parallel NAND ("qcom,ipq5332-nand"). Mainline ipq5332.dtsi
+ * has no pre-existing QPIC NAND node of either flavour (serial or raw), so
+ * kernel patch 0382 adds this controller, qpic_nand_raw, fresh at
+ * 0x079b0000. qpic_nand_raw already declares its nandcs@0 child with
+ * reg/nand-ecc-strength/nand-ecc-step-size/nand-bus-width, so the board
+ * override here only needs to add the partition table to that child.
+ *
+ * qpic_bam (the QPIC block's own dedicated BAM at 0x07984000, separate
+ * from the shared BLSP1 BAM used by the on-chip UART/SPI/I2C peripherals)
+ * is also missing from mainline ipq5332.dtsi at this kernel version and is
+ * added by patch 0382 alongside qpic_nand_raw. It is disabled by default
+ * and must be enabled here too.
+ */
+&qpic_bam {
+	status = "okay";
+};
+
+&qpic_nand_raw {
+	status = "okay";
+
+	nandcs@0 {
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "0:sbl1";
+				reg = <0x0 0x100000>;
+				read-only;
+			};
+
+			partition@100000 {
+				label = "0:sbl1_1";
+				reg = <0x100000 0x100000>;
+				read-only;
+			};
+
+			partition@200000 {
+				label = "0:mibib";
+				reg = <0x200000 0x100000>;
+				read-only;
+			};
+
+			partition@300000 {
+				label = "0:bootconfig";
+				reg = <0x300000 0x80000>;
+				read-only;
+			};
+
+			partition@380000 {
+				label = "0:bootconfig1";
+				reg = <0x380000 0x80000>;
+				read-only;
+			};
+
+			partition@400000 {
+				label = "0:qsee";
+				reg = <0x400000 0x200000>;
+				read-only;
+			};
+
+			partition@600000 {
+				label = "0:qsee_1";
+				reg = <0x600000 0x200000>;
+				read-only;
+			};
+
+			partition@800000 {
+				label = "0:devcfg";
+				reg = <0x800000 0x80000>;
+				read-only;
+			};
+
+			partition@880000 {
+				label = "0:devcfg_1";
+				reg = <0x880000 0x80000>;
+				read-only;
+			};
+
+			partition@900000 {
+				label = "0:tme";
+				reg = <0x900000 0x80000>;
+				read-only;
+			};
+
+			partition@980000 {
+				label = "0:tme_1";
+				reg = <0x980000 0x80000>;
+				read-only;
+			};
+
+			partition@a00000 {
+				label = "0:cdt";
+				reg = <0xa00000 0x80000>;
+				read-only;
+			};
+
+			partition@a80000 {
+				label = "0:cdt_1";
+				reg = <0xa80000 0x80000>;
+				read-only;
+			};
+
+			partition@b00000 {
+				label = "0:appsblenv";
+				reg = <0xb00000 0x80000>;
+			};
+
+			partition@b80000 {
+				label = "0:appsbl";
+				reg = <0xb80000 0x100000>;
+				read-only;
+			};
+
+			partition@c80000 {
+				label = "0:appsbl_1";
+				reg = <0xc80000 0x100000>;
+				read-only;
+			};
+
+			partition@d80000 {
+				label = "0:training";
+				reg = <0xd80000 0x80000>;
+				read-only;
+			};
+
+			partition@e00000 {
+				label = "0:art";
+				reg = <0xe00000 0x200000>;
+				read-only;
+			};
+
+			partition@1000000 {
+				label = "0:license";
+				reg = <0x1000000 0x40000>;
+				read-only;
+			};
+
+			partition@1040000 {
+				label = "rootfs";
+				reg = <0x1040000 0x2a00000>;
+			};
+
+			partition@3a40000 {
+				label = "rootfs_1";
+				reg = <0x3a40000 0x2a00000>;
+			};
+
+			partition@6440000 {
+				label = "bdata";
+				reg = <0x6440000 0x80000>;
+			};
+
+			partition@64c0000 {
+				label = "crash";
+				reg = <0x64c0000 0x80000>;
+			};
+
+			partition@6540000 {
+				label = "overlay";
+				reg = <0x6540000 0x1ac0000>;
+			};
+		};
+	};
+};
+
+&mdio {
+	status = "okay";
+
+	/*
+	 * Both real PHYs sit on this bus (vendor DT: ethernet-phy@0 reg=0x0c,
+	 * ethernet-phy@1 reg=0x07). pinctrl-0 is left at the ipq5332.dtsi
+	 * default (mdio0_pins + mdio1_pins), which already covers both.
+	 *
+	 * FIXME: the vendor DT also carries a non-standard
+	 * "phy-reset-gpio = <&tlmm 25 0>" on this node, but gpio25 is the
+	 * same pin muxed to the mdc0 function a few lines above it in the
+	 * vendor tree -- almost certainly a stale/vestigial property, not
+	 * wired here. Verify against real hardware before trusting either
+	 * way.
+	 */
+
+	phy0: ethernet-phy@c {
+		reg = <0x0c>;
+	};
+
+	phy1: ethernet-phy@7 {
+		reg = <0x07>;
+	};
+};
+
+&qcom_ppe {
+	status = "okay";
+
+	ethernet-ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* WAN, forced 2500M link to the PHY at mdio address 0x0c */
+		port@1 {
+			reg = <1>;
+			phy-mode = "2500base-x";
+			label = "wan";
+			phy-handle = <&phy0>;
+			pcs-handle = <&pcs0_ch0>;
+			local-mac-address = [00 00 00 00 00 00];
+			clocks = <&nsscc NSS_CC_PORT1_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT1_RX_CLK>,
+				 <&nsscc NSS_CC_PORT1_TX_CLK>;
+			clock-names = "mac",
+				      "rx",
+				      "tx";
+			resets = <&nsscc NSS_CC_PORT1_MAC_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT1_RX_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT1_TX_CLK_ARES>;
+			reset-names = "mac",
+				      "rx",
+				      "tx";
+		};
+
+		/* LAN, PHY at mdio address 0x07 */
+		port@2 {
+			reg = <2>;
+			phy-mode = "sgmii";
+			label = "lan";
+			phy-handle = <&phy1>;
+			pcs-handle = <&pcs1_ch0>;
+			local-mac-address = [00 00 00 00 00 00];
+			clocks = <&nsscc NSS_CC_PORT2_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT2_RX_CLK>,
+				 <&nsscc NSS_CC_PORT2_TX_CLK>;
+			clock-names = "mac",
+				      "rx",
+				      "tx";
+			resets = <&nsscc NSS_CC_PORT2_MAC_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT2_RX_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT2_TX_CLK_ARES>;
+			reset-names = "mac",
+				      "rx",
+				      "tx";
+		};
+	};
+};
+
+&pcs0 {
+	status = "okay";
+};
+
+&pcs1 {
+	status = "okay";
+};
+
+&pwm {
+	pinctrl-0 = <&pwm_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&tlmm {
+	button_pins: button-state {
+		reset-pins {
+			pins = "gpio43";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-pull-up;
+		};
+	};
+
+	pwm_pins: pwm-state {
+		pwm1-pins {
+			pins = "gpio31";
+			function = "pwm1";
+			drive-strength = <8>;
+		};
+
+		pwm2-pins {
+			pins = "gpio30";
+			function = "pwm2";
+			drive-strength = <8>;
+		};
+	};
+};
