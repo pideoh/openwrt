@@ -139,6 +139,10 @@
  * partition) is left as future work -- see the "0:art" partition on
  * &qpic_nand below, which almost certainly holds it on this board.
  */
+&q6v5_wcss {
+	status = "okay";
+};
+
 &wifi0 {
 	qcom,calibration-variant = "RN01";
 	status = "okay";
@@ -351,6 +355,27 @@
 	status = "okay";
 
 	/*
+	 * RN01/IPQ5332 finding (Opus second-opinion consult, confirmed via
+	 * /sys/kernel/debug/gpio hardware register readback, not the
+	 * pinctrl-msm software-bookkeeping pinmux-pins file which always
+	 * matches regardless): on vendor's *working* kernel, gpio25 reads
+	 * back func0 (=gpio, the TLMM convention where function index 0 is
+	 * always plain GPIO) -- NOT mdc0. Vendor's own driver claims gpio25
+	 * as a plain GPIO for the PHY reset line and *never* switches it
+	 * back to the mdc0 alt-function. So the real, physically-wired MDIO
+	 * bus on this board is mdc1/mdio1 (gpio27/28) -- mdio0_pins
+	 * (gpio25/26 as mdc0/mdio0) is reference-design copy-paste that this
+	 * board never actually uses for MDIO signalling. The earlier
+	 * pulse-then-revert-to-"default" approach (§10.13,
+	 * 0393-net-mdio-ipq4019-add-optional-pinmux-shared-phy-reset.patch)
+	 * was necessarily wrong: reverting to "default" re-attaches gpio25
+	 * to mdc0, which then clocks straight into the PHY's reset pin on
+	 * every MDIO transaction. Fix: hold gpio25 as a plain GPIO
+	 * permanently via the mdio0_pins override below (mirroring vendor's
+	 * measured "out high" / 4mA / pull-up), never touch it again.
+	 */
+
+	/*
 	 * Both real PHYs sit on this bus (vendor DT: ethernet-phy@0 reg=0x0c,
 	 * ethernet-phy@1 reg=0x07). pinctrl-0 is left at the ipq5332.dtsi
 	 * default (mdio0_pins + mdio1_pins), which already covers both.
@@ -399,12 +424,47 @@
 	 * plain Clause-22 MDIO scan finds nothing at this address.
 	 */
 	phy0: ethernet-phy@c {
-		compatible = "ethernet-phy-id004d.d101";
+		/*
+		 * Forced-compatible override removed for this test: a clean
+		 * generic Clause-22 MDIO scan finding the PHY here is the
+		 * unambiguous pass signal for the gpio25-as-permanent-GPIO fix.
+		 */
 		reg = <0x0c>;
 	};
 
-	phy1: ethernet-phy@7 {
-		reg = <0x07>;
+};
+
+/*
+ * Override ipq5332.dtsi's mdio0_pins: hold gpio25 as a plain GPIO
+ * (not mdc0) permanently, matching vendor's measured hardware state
+ * exactly (func0/4mA/pull-up). gpio26 stays the mdio0 data line but at
+ * vendor's measured 4mA (was the dtsi default of 8mA).
+ */
+&mdio0_pins {
+	mux_0 {
+		function = "gpio";
+		drive-strength = <4>;
+		bias-pull-up;
+	};
+
+	mux_1 {
+		drive-strength = <4>;
+	};
+};
+
+/*
+ * Override ipq5332.dtsi's mdio1_pins to match vendor's measured
+ * electrical values on the real MDIO bus (gpio27/28): 4mA instead of the
+ * dtsi default 8mA, and mdc1 (gpio27) pulled up instead of bias-disable.
+ */
+&mdio1_pins {
+	mux_0 {
+		drive-strength = <4>;
+		bias-pull-up;
+	};
+
+	mux_1 {
+		drive-strength = <4>;
 	};
 };
 
@@ -437,12 +497,21 @@
 				      "tx";
 		};
 
-		/* LAN, PHY at mdio address 0x07 */
+		/*
+		 * LAN is not a plain PHY at mdio address 0x07 -- confirmed live
+		 * via U-Boot (mii read 0x7 0/2/3 all return 0xffff, not a valid
+		 * Clause-22 response) that this is the Motorcomm YT9215S managed
+		 * switch chip ("YT9215S init done" in every boot's U-Boot log,
+		 * vendor kallsyms show a dedicated yt_switch.ko with its own
+		 * miwifi_mdio_read/write, a proprietary non-Clause-22 access
+		 * convention). No phylib-visible PHY exists on this SGMII link to
+		 * poll -- use fixed-link instead of phy-handle, matching how any
+		 * SoC-to-switch uplink is normally described.
+		 */
 		port@2 {
 			reg = <2>;
 			phy-mode = "sgmii";
 			label = "lan";
-			phy-handle = <&phy1>;
 			pcs-handle = <&pcs1_ch0>;
 			local-mac-address = [00 00 00 00 00 00];
 			clocks = <&nsscc NSS_CC_PORT2_MAC_CLK>,
@@ -457,6 +526,11 @@
 			reset-names = "mac",
 				      "rx",
 				      "tx";
+
+			fixed-link {
+				speed = <1000>;
+				full-duplex;
+			};
 		};
 	};
 };
