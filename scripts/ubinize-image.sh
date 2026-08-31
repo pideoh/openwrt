@@ -10,6 +10,8 @@ rootfs=""
 outfile=""
 err=""
 ubinize_seq=""
+rootfs_name="rootfs"
+kernel_voltype="dynamic"
 
 ubivol() {
 	local volid="$1"
@@ -75,7 +77,7 @@ ubilayout() {
 		vol_id=$(( vol_id + 1 ))
 	done
 	if [ "$3" ]; then
-		ubivol $vol_id kernel "$3"
+		ubivol $vol_id kernel "$3" "" "" "$kernel_voltype"
 		vol_id=$(( vol_id + 1 ))
 	fi
 
@@ -90,7 +92,7 @@ ubilayout() {
 			rootsize="$( round_up "$( stat -c%s "$2" )" 1024 )"
 			;;
 		esac
-		ubivol $vol_id rootfs "$2" "$autoresize" "$rootsize"
+		ubivol $vol_id "$rootfs_name" "$2" "$autoresize" "$rootsize"
 
 		vol_id=$(( vol_id + 1 ))
 		[ "$rootfs_type" = "ubifs" ] || ubivol $vol_id rootfs_data "" 1
@@ -128,6 +130,17 @@ while [ "$1" ]; do
 		shift
 		continue
 		;;
+	"--rootfs-name")
+		rootfs_name="$2"
+		shift
+		shift
+		continue
+		;;
+	"--kernel-static")
+		kernel_voltype="static"
+		shift
+		continue
+		;;
 	"-"*)
 		ubinize_param="$*"
 		break
@@ -143,7 +156,7 @@ while [ "$1" ]; do
 done
 
 if [ ! -r "$rootfs" ] && [ ! -r "$kernel" ] && [ ! "$parts" ] && [ ! "$outfile" ]; then
-	echo "syntax: $0 [--uboot-env] [--part <name>=<file>] [--kernel kernelimage] [--rootfs rootfsimage] out [ubinize opts]"
+	echo "syntax: $0 [--uboot-env] [--part <name>=<file>] [--kernel kernelimage] [--kernel-static] [--rootfs rootfsimage] [--rootfs-name <name>] out [ubinize opts]"
 	exit 1
 fi
 

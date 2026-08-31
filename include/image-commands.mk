@@ -197,8 +197,10 @@ define Build/append-ubi
 	sh $(TOPDIR)/scripts/ubinize-image.sh \
 		$(if $(UBOOTENV_IN_UBI),--uboot-env) \
 		$(if $(KERNEL_IN_UBI),--kernel $(IMAGE_KERNEL)) \
+		$(if $(UBI_KERNEL_STATIC),--kernel-static) \
 		$(foreach part,$(UBINIZE_PARTS),--part $(part)) \
 		--rootfs $(IMAGE_ROOTFS) \
+		$(if $(UBI_ROOTFS_VOLNAME),--rootfs-name $(UBI_ROOTFS_VOLNAME)) \
 		$@.tmp \
 		-p $(BLOCKSIZE:%k=%KiB) -m $(PAGESIZE) \
 		$(if $(SUBPAGESIZE),-s $(SUBPAGESIZE)) \
@@ -228,6 +230,7 @@ define Build/ubinize-kernel
 	cp $@ $@.tmp
 	sh $(TOPDIR)/scripts/ubinize-image.sh \
 		--kernel $@.tmp \
+		$(if $(UBI_KERNEL_STATIC),--kernel-static) \
 		$@ \
 		-p $(BLOCKSIZE:%k=%KiB) -m $(PAGESIZE) \
 		$(if $(SUBPAGESIZE),-s $(SUBPAGESIZE)) \

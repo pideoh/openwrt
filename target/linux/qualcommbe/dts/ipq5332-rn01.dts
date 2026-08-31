@@ -21,13 +21,25 @@
 	chosen {
 		bootargs = "console=ttyMSM0,115200n8";
 		/*
-		 * Xiaomi's u-boot sets:
-		 *   ubi.mtd=rootfs_1 root=mtd:ubi_rootfs rootfstype=squashfs \
-		 *   cnss2.enable_mlo_support=1 rootwait
-		 * "rootfs_1" is the vendor's B slot; override it to boot OpenWrt's
-		 * own "rootfs" UBI volume instead.
+		 * Xiaomi's u-boot sets "ubi.mtd=rootfs_1 root=mtd:ubi_rootfs
+		 * rootfstype=squashfs cnss2.enable_mlo_support=1 rootwait" --
+		 * "rootfs_1" is the vendor's B slot (override to OpenWrt's own
+		 * "rootfs" volume), and "root=mtd:ubi_rootfs" is the vendor
+		 * QSDK kernel's own non-mainline root= convention (confirmed
+		 * live: mainline's do_mounts.c has no "mtd:" root device
+		 * resolver at all -- boots with "Can't lookup blockdev" and
+		 * panics). Mainline's own convention for a UBI-block-backed
+		 * squashfs root, matching every other OpenWrt ipq5018/ipq50xx
+		 * Xiaomi board (e.g. xiaomi_ax6000), is "root=/dev/ubiblockN_M"
+		 * where M is the volume's index within the UBI device --
+		 * "ubi_rootfs" is volume index 1 here (0 is "kernel"). The
+		 * ubiblockN_M device node only gets created if explicitly
+		 * requested via "ubi.block=N,M" (or the volume name) --
+		 * confirmed live: without it, boot hangs forever on "Waiting
+		 * for root device /dev/ubiblock0_1..." since nothing ever
+		 * creates that node.
 		 */
-		bootargs-append = " ubi.mtd=rootfs root=mtd:ubi_rootfs rootfstype=squashfs rootwait";
+		bootargs-append = " ubi.mtd=rootfs ubi.block=0,ubi_rootfs root=/dev/ubiblock0_1 rootfstype=squashfs rootwait";
 		stdout-path = "serial0:115200n8";
 	};
 
@@ -94,6 +106,23 @@
 };
 
 /*
+ * ipq5332.dtsi deliberately leaves xo_board's "clock-frequency" unset
+ * (unlike cmn_pll_nss_*_clk, which hardcode a value) -- every real board
+ * dts is expected to supply it. Missing this meant gcc_uniphy_sys_clk_src
+ * (whose only parent is xo_board) could never compute a non-zero rate no
+ * matter what assigned-clocks/clk_set_rate() did: recalc_rate() multiplies
+ * by the parent rate, so parent=0 forces the result to 0 regardless of a
+ * "successful" divider write -- confirmed live: clk_set_rate() returned 0
+ * (success) but clk_get_rate() immediately after still read back 0.
+ * Confirmed missing on this board by comparing against Qualcomm's own
+ * reference boards (ipq5332-rdp-common.dtsi) and the other real in-tree
+ * ipq5332 board (ipq5332-u7-pro-xgs.dts), both of which set this to 24MHz.
+ */
+&xo_board {
+	clock-frequency = <24000000>;
+};
+
+/*
  * WiFi: q6v5_wcss / wifi0 (QCA5332, 2.4 GHz) / wifi1 (QCN6432, 5 GHz) and
  * their smp2p/memory-region plumbing are wired up in ipq5332.dtsi by the
  * "arm64: dts: qcom: ipq5332: add wcss multipd wifi" kernel patch. This
@@ -107,8 +136,8 @@
  * ath12k staging tree (IPQ5332/hw1.0 for wifi0, QCN6432/hw1.0 for wifi1);
  * those are used as the initial calibration source here. RN01-specific
  * calibration (extracted from the vendor's own board data / "0:art"
- * partition) is left as future work -- see the qpic_nand_raw partition
- * "0:art" below, which almost certainly holds it on this board.
+ * partition) is left as future work -- see the "0:art" partition on
+ * &qpic_nand below, which almost certainly holds it on this board.
  */
 &wifi0 {
 	qcom,calibration-variant = "RN01";
@@ -127,27 +156,51 @@
 };
 
 /*
- * RN01 uses raw parallel NAND ("qcom,ipq5332-nand"). Mainline ipq5332.dtsi
- * has no pre-existing QPIC NAND node of either flavour (serial or raw), so
- * kernel patch 0382 adds this controller, qpic_nand_raw, fresh at
- * 0x079b0000. qpic_nand_raw already declares its nandcs@0 child with
- * reg/nand-ecc-strength/nand-ecc-step-size/nand-bus-width, so the board
- * override here only needs to add the partition table to that child.
+ * RN01's boot storage is a Winbond W25N01GWZEIG SPI NAND chip (128 MiB,
+ * SLC, 1.8V), confirmed directly from a live vendor dmesg: "Manufacturer
+ * ID: 0xef, Chip ID: 0xba" / "Winbond W25N01GWZEIG SPI NAND 1G 1.8V", and
+ * corroborated by the vendor DT's own pinmux node for this controller
+ * being named "qspi_nand_pins" (qspi_clk/qspi_cs) -- i.e. genuine QSPI
+ * signals, not an 8-bit parallel NAND bus.
+ *
+ * This directly contradicts an earlier assumption made from the vendor
+ * DT's "qcom,ipq5332-nand" compatible string alone (without the "-snand"
+ * suffix mainline uses for the serial flavour), which led to wrongly
+ * treating this as raw parallel NAND and adding a standalone
+ * qpic_nand_raw/nand@79b0000 node + qcom_nandc.c raw-NAND driver compat
+ * entry (former kernel patches 0380/0382, now removed). In fact:
+ *  - Mainline ipq5332.dtsi already describes this exact controller as
+ *    qpic_nand: spi@79b0000, compatible "qcom,ipq5332-snand" -- disabled
+ *    by default, needing only status="okay" and a child flash node, no
+ *    new devicetree node or driver patch required.
+ *  - The Winbond W25N01GW (ID 0xba/0x21) is natively supported by
+ *    mainline's generic drivers/mtd/nand/spi/winbond.c.
+ *  - qcom,ipq5332-nand (without "-snand") was in fact never added to
+ *    mainline's raw-NAND qcom,nandc.yaml compatible list for IPQ5332 at
+ *    all -- the vendor's QSDK downstream kernel evidently reuses that
+ *    compatible name for its own unified NAND driver that autodetects
+ *    chip type at runtime, unrelated to mainline's raw/serial split.
  *
  * qpic_bam (the QPIC block's own dedicated BAM at 0x07984000, separate
  * from the shared BLSP1 BAM used by the on-chip UART/SPI/I2C peripherals)
- * is also missing from mainline ipq5332.dtsi at this kernel version and is
- * added by patch 0382 alongside qpic_nand_raw. It is disabled by default
- * and must be enabled here too.
+ * already exists in mainline ipq5332.dtsi too, disabled by default.
  */
 &qpic_bam {
 	status = "okay";
 };
 
-&qpic_nand_raw {
+&qpic_nand {
 	status = "okay";
 
-	nandcs@0 {
+	flash@0 {
+		compatible = "spi-nand";
+		reg = <0>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		nand-ecc-engine = <&qpic_nand>;
+		nand-ecc-strength = <4>;
+		nand-ecc-step-size = <512>;
+
 		partitions {
 			compatible = "fixed-partitions";
 			#address-cells = <1>;
@@ -302,15 +355,51 @@
 	 * ethernet-phy@1 reg=0x07). pinctrl-0 is left at the ipq5332.dtsi
 	 * default (mdio0_pins + mdio1_pins), which already covers both.
 	 *
-	 * FIXME: the vendor DT also carries a non-standard
-	 * "phy-reset-gpio = <&tlmm 25 0>" on this node, but gpio25 is the
-	 * same pin muxed to the mdc0 function a few lines above it in the
-	 * vendor tree -- almost certainly a stale/vestigial property, not
-	 * wired here. Verify against real hardware before trusting either
-	 * way.
+	 * Tried the vendor DT's own "phy-reset-gpio = <&tlmm 25 0>" (gpio25)
+	 * as mainline's *per-child* "reset-gpios" (on the ethernet-phy@c
+	 * node) first -- confirmed live this is wrong: gpio25 is also muxed
+	 * to the mdc0 (MDIO clock 0) function in mdio0_pins, and that
+	 * per-child path (of_mdiobus_register_phy(), in drivers/net/mdio/
+	 * of_mdio.c) grabs the pin as a raw GPIO before pinctrl can apply the
+	 * mdc0 default state, breaking MDIO bus registration entirely ("pin
+	 * GPIO_25 already requested by 90000.mdio; cannot claim for
+	 * 1000000.pinctrl", "Cannot register MDIO bus!"). Reverted at the
+	 * time.
+	 *
+	 * Since then, confirmed via a saved *vendor Linux* UART log (not just
+	 * U-Boot) that vendor's own qca-mdio driver does "Reset PHY by GPIO
+	 * 484" (= this same &tlmm 25 pin) on every single boot as a normal
+	 * part of bring-up -- so a GPIO reset pulse is genuinely needed by
+	 * Linux, not just cosmetic; U-Boot's plain ID read succeeding without
+	 * it doesn't mean a full soft-reset handshake doesn't need it too.
+	 *
+	 * A working, mainline-clean fix for this exact pin-sharing conflict
+	 * (pinctrl_select_state() to a temporary "gpio" state around the
+	 * pulse, avoiding pinctrl-msm.c's `.strict` ownership check entirely)
+	 * was written and confirmed live -- see the not-yet-committed
+	 * `0393-net-mdio-ipq4019-add-optional-pinmux-shared-phy-reset.patch`
+	 * kept alongside this tree. It's held back from this commit because,
+	 * even with the mechanism working exactly as designed (pinctrl state
+	 * switches cleanly, GPIO pulsed, no ownership conflict), it does not
+	 * actually fix Ethernet: `phy_poll_reset failed: -110` still happens
+	 * identically. See PORTING.md §10.13/§10.14 for the full
+	 * investigation, including the (also real, but likewise insufficient
+	 * on its own) `xo_board` clock fix below. Re-add both the patch and
+	 * this devicetree wiring together once the actual root cause is
+	 * found and one of them turns out to matter.
 	 */
 
+	/*
+	 * phy0 (WAN, 2500base-x) is confirmed to be a Qualcomm QCA8081 --
+	 * IEEE PHY ID 0x004dd101, matching U-Boot's own "PHY ID1: 0x4d /
+	 * PHY ID2: 0xd101" -- and PHY_ID_MATCH_EXACT(0x004dd101) is right
+	 * there in mainline's drivers/net/phy/qcom/qca808x.c. Explicit
+	 * standard-IEEE compatible string added to match, mirroring the
+	 * working ipq5018-ax6000.dts qca8081 node -- without it, phylib's
+	 * plain Clause-22 MDIO scan finds nothing at this address.
+	 */
 	phy0: ethernet-phy@c {
+		compatible = "ethernet-phy-id004d.d101";
 		reg = <0x0c>;
 	};
 
@@ -372,12 +461,37 @@
 	};
 };
 
+/*
+ * gcc_uniphy_sys_clk_src (the shared parent of GCC_UNIPHY0/1_SYS_CLK,
+ * which pcs0/pcs1 consume below) is a clk_rcg2 with a single-entry
+ * frequency table (24MHz off XO) -- it does not self-initialize, and
+ * nothing else assigns it a rate. Confirmed live via clk_rate debugfs
+ * (not just clk_summary, which mis-renders in the wrapped serial
+ * terminal): both uniphy0_sys_clk and uniphy1_sys_clk read enabled but
+ * stuck at rate=0. Two placements tried (on &gcc itself, then here on
+ * pcs0/pcs1), neither changed the readback. Traced why: of_clk_set_defaults()
+ * IS reached both ways (confirmed by reading drivers/base/platform.c and
+ * drivers/clk/clk-conf.c live in the pinned 6.18.44 tree -- the
+ * clk_supplier=false self-reference skip in __set_clk_rates() only
+ * triggers when the *assigned-clocks target itself* is the same node the
+ * property lives on, which isn't our case here), so the no-op is still
+ * unexplained. Likely a red herring for the actual PHY problem anyway:
+ * pcs-qcom-ipq9574.c's own probe only does devm_clk_get_enabled() on
+ * "sys"/"ahb" (gate, no rate-set), and its real per-link rx/tx rate-setting
+ * (ipq_pcs_mii_clk_set_rate(), added by the 0371 patch) is a completely
+ * separate mechanism keyed off negotiated link speed, not this clock.
+ * Left in place since it's harmless, but not expected to matter.
+ */
 &pcs0 {
 	status = "okay";
+	assigned-clocks = <&gcc GCC_UNIPHY_SYS_CLK_SRC>;
+	assigned-clock-rates = <24000000>;
 };
 
 &pcs1 {
 	status = "okay";
+	assigned-clocks = <&gcc GCC_UNIPHY_SYS_CLK_SRC>;
+	assigned-clock-rates = <24000000>;
 };
 
 &pwm {

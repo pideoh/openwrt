@@ -17,6 +17,13 @@ define Build/fit-inline-rootfs
 	rm -f $@.dtb $@.kernel
 endef
 
+define Build/rn01-wrap-kernel-elf
+	python3 $(TOPDIR)/target/linux/qualcommbe/image/rn01-wrap-kernel-elf.py \
+		$(TOPDIR)/target/linux/qualcommbe/image/rn01-kernel-elf-header.bin \
+		$@ $@.new
+	mv $@.new $@
+endef
+
 define Device/ubnt_u7-pro-xgs
 	DEVICE_VENDOR := Ubiquiti
 	DEVICE_MODEL := UniFi 7
@@ -44,6 +51,20 @@ TARGET_DEVICES += ubnt_u7-pro-xgs
 define Device/xiaomi_rn01
 	$(call Device/FitImage)
 	$(call Device/UbiFit)
+	# The vendor bootloader's do_bootmiwifi requires the "kernel" UBI
+	# volume to start with a small ELF wrapper (see rn01-wrap-kernel-elf.py
+	# for the full story) or it logs "It is not a elf image" and resets --
+	# confirmed live via UART. Append the wrapping step to the plain FIT
+	# pipeline Device/FitImage already set up.
+	KERNEL += | rn01-wrap-kernel-elf
+	# The vendor bootloader's do_bootmiwifi looks up UBI volumes by name
+	# ("kernel", static; "ubi_rootfs", dynamic) -- confirmed via a live
+	# U-Boot dump of the vendor's own rootfs_1 volume table, which do_bootmiwifi's
+	# hardcoded volume lookup can't find in the default "kernel"
+	# (dynamic) / "rootfs" (dynamic) layout scripts/ubinize-image.sh
+	# otherwise produces.
+	UBI_KERNEL_STATIC := 1
+	UBI_ROOTFS_VOLNAME := ubi_rootfs
 	DEVICE_VENDOR := Xiaomi
 	DEVICE_MODEL := BE3600 Pro
 	SOC := ipq5332
@@ -53,17 +74,31 @@ define Device/xiaomi_rn01
 	# if any, the stock RN01 U-Boot actually looks for.
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
-	# TODO: page/block size above are carried over from the same-family
-	# ipq50xx Xiaomi UBI devices (xiaomi_ax6000 etc); the vendor DT's
-	# nand@79b0000 node gives ECC params (nand-ecc-strength/step-size) but
-	# not page/block geometry directly -- confirm against the real NAND part.
+	# Confirmed against a live vendor dmesg on real hardware: the boot
+	# storage is a Winbond W25N01GWZEIG SPI NAND (128 MiB, SLC, erase
+	# size 128 KiB, page size 2048, OOB 64) -- matches these values
+	# exactly, carried over from the same-family ipq50xx Xiaomi UBI
+	# devices (xiaomi_ax6000 etc).
 	# rootfs/rootfs_1 in the vendor DT are 0x2a00000 (42MiB) each; leave
 	# headroom for the "kernel" UBI volume (KERNEL_SIZE) inside that.
 	KERNEL_SIZE := 8192k
 	IMAGE_SIZE := 43008k
 	NAND_SIZE := 128m
 	SUPPORTED_DEVICES += xiaomi,rn01
-	DEVICE_PACKAGES := kmod-ath12k ath12k-firmware-ipq5332 ath12k-firmware-qcn6432 kmod-leds-pwm
+	# TODO: ath12k-firmware-ipq5332/-qcn6432 packages exist in
+	# package/firmware/linux-firmware/qca_ath12k.mk but the linux-firmware
+	# tarball this build pins (20260810) does not yet contain
+	# ath12k/IPQ5332/hw1.0/* or ath12k/QCN6432/hw1.0/* (confirmed by a real
+	# package/compile failure: "install: cannot stat
+	# .../linux-firmware-20260810/ath12k/IPQ5332/hw1.0/*"). Those files exist
+	# in the CodeLinaro ath12k-firmware staging mirror but haven't landed in
+	# a released linux-firmware tarball yet. Re-add once either (a) a newer
+	# linux-firmware release includes them, or (b) qca_ath12k.mk is given its
+	# own PKG_SOURCE_URL pointing at the staging mirror instead of relying on
+	# the shared linux-firmware source tree. Left out of DEVICE_PACKAGES for
+	# now so Phase 1 (no-WiFi bring-up) can build; WiFi packaging is Phase 2
+	# work anyway.
+	DEVICE_PACKAGES := kmod-ath12k kmod-leds-pwm
 	# The vendor DT shows two active radios: wifi@c0000000
 	# (qcom,cnss-qca5332 / qcom,ipq5332-wifi, on-chip AHB) and wifi4@f00000
 	# (qcom,cnss-qcn6432, multipd userpd1). Per ATH12K_HW_IPQ5332_HW10
