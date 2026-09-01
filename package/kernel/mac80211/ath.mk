@@ -69,6 +69,10 @@ config-$(call config_package,ath11k) += ATH11K
 config-$(call config_package,ath11k-ahb) += ATH11K_AHB
 config-$(call config_package,ath11k-pci) += ATH11K_PCI
 config-$(call config_package,ath12k) += ATH12K
+# IPQ5332 and friends put the ath12k radios on the internal AHB bus
+# instead of PCIe; ahb.o is built into ath12k.ko rather than being a
+# separate module, so this is a config symbol, not another package.
+config-$(CONFIG_TARGET_qualcommbe) += ATH12K_AHB
 
 config-$(call config_package,ath5k) += ATH5K ATH5K_PCI
 
