@@ -124,6 +124,19 @@
 };
 
 /*
+ * Same omission as xo_board above, and the same consequence: ipq5332.dtsi
+ * declares sleep_clk as a "fixed-clock" with no "clock-frequency", and
+ * _of_fixed_clk_setup() refuses to register such a clock at all, so every
+ * descendant is left an orphan with rate 0. The PPE node itself consumes
+ * one (gcc GCC_IM_SLEEP_CLK, clock-name "gcc_im_sleep"), and vendor's own
+ * switch node lists gcc_im_sleep_clk too. Vendor's DT sets 32 kHz
+ * (clock-frequency = <0x7d00>), as does ipq5332-u7-pro-xgs.dts.
+ */
+&sleep_clk {
+	clock-frequency = <32000>;
+};
+
+/*
  * WiFi: q6v5_wcss / wifi0 (QCA5332, 2.4 GHz) / wifi1 (QCN6432, 5 GHz) and
  * their smp2p/memory-region plumbing are wired up in ipq5332.dtsi by the
  * "arm64: dts: qcom: ipq5332: add wcss multipd wifi" kernel patch. This
