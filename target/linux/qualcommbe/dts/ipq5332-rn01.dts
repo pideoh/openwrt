@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0-or-later OR MIT)
 /dts-v1/;
 
 #include <arm64/qcom/ipq5332.dtsi>
