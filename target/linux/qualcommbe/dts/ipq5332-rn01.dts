@@ -162,9 +162,23 @@
 	status = "okay";
 };
 
+/*
+ * wifi1 is the QCN6432 companion radio (5 GHz). Left disabled: mainline
+ * ath12k has no QCN6432 support -- hw.c carries hw_params for qcn9274
+ * hw1.0/hw2.0, wcn7850 hw2.0 and ipq5332 hw1.0 only, and the string
+ * "qcn6432" appears nowhere in the driver. Because the node claims
+ * compatible = "qcom,ipq5332-wifi", ath12k_ahb binds to it anyway and
+ * tries to treat it as an on-chip radio, failing at ioremap:
+ *
+ *   ath12k_ahb wifi-qcn6432: error -EINVAL: invalid resource (null)
+ *   ath12k_ahb wifi-qcn6432: error -EINVAL: ioremap error
+ *
+ * Giving it a reg would not help, it would only move the failure later.
+ * Enable this once ath12k actually supports the chip.
+ */
 &wifi1 {
 	qcom,calibration-variant = "RN01";
-	status = "okay";
+	status = "disabled";
 };
 
 &blsp1_uart0 {
