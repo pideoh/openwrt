@@ -329,6 +329,43 @@
 				label = "0:art";
 				reg = <0xe00000 0x200000>;
 				read-only;
+
+				/*
+				 * MAC addresses live at the very start of "0:art",
+				 * two consecutive 6-byte entries, matching the
+				 * layout the same-vendor ipq5018 boards use
+				 * (cf. ipq5018-ax6000.dts's macaddr@0/macaddr@6).
+				 *
+				 * Which entry belongs to which port was confirmed
+				 * on real hardware rather than assumed: the first
+				 * 16 bytes of /dev/mtdblock17 were read out and
+				 * compared against the vendor devicetree's own
+				 * per-port assignment. Offset 0x0 matches the MAC
+				 * vendor gives "dp2" (qcom,id = <2>, the port
+				 * carrying qcom,phy-mdio-addr = <0x0c>, i.e. WAN),
+				 * and offset 0x6 matches the one vendor gives
+				 * "dp1" (qcom,id = <1>, no phy, i.e. the YT9215S
+				 * switch uplink / LAN). Note this is the opposite
+				 * order from ipq5018-ax6000.dts, where offset 0 is
+				 * the LAN MAC -- so it cannot be assumed, and was
+				 * measured.
+				 *
+				 * A third MAC follows at offset 0xc (presumably
+				 * WiFi); it is left undeclared until a radio
+				 * actually needs it.
+				 */
+				nvmem-layout {
+					compatible = "fixed-layout";
+					#address-cells = <1>;
+					#size-cells = <1>;
+
+					mac_addr_wan: macaddr@0 {
+						reg = <0x0 0x6>;
+					};
+
+					mac_addr_lan: macaddr@6 {
+						reg = <0x6 0x6>;
+					};
 				};
 			};
 
@@ -505,7 +542,8 @@
 			phy-mode = "2500base-x";
 			label = "lan";
 			pcs-handle = <&pcs0_ch0>;
-			local-mac-address = [00 00 00 00 00 00];
+			nvmem-cells = <&mac_addr_lan 0>;
+			nvmem-cell-names = "mac-address";
 			clocks = <&nsscc NSS_CC_PORT1_MAC_CLK>,
 				 <&nsscc NSS_CC_PORT1_RX_CLK>,
 				 <&nsscc NSS_CC_PORT1_TX_CLK>;
@@ -549,7 +587,8 @@
 			label = "wan";
 			phy-handle = <&phy0>;
 			pcs-handle = <&pcs1_ch0>;
-			local-mac-address = [00 00 00 00 00 00];
+			nvmem-cells = <&mac_addr_wan 0>;
+			nvmem-cell-names = "mac-address";
 			clocks = <&nsscc NSS_CC_PORT2_MAC_CLK>,
 				 <&nsscc NSS_CC_PORT2_RX_CLK>,
 				 <&nsscc NSS_CC_PORT2_TX_CLK>;
