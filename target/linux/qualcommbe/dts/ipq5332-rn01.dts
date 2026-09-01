@@ -329,6 +329,7 @@
 				label = "0:art";
 				reg = <0xe00000 0x200000>;
 				read-only;
+				};
 			};
 
 			partition@1000000 {
@@ -489,12 +490,20 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		/* WAN, forced 2500M link to the PHY at mdio address 0x0c */
+		/*
+		 * LAN: the YT9215S switch uplink. Vendor's own DT puts the
+		 * PHY-less, forced-2500M link on PPE port 1
+		 * (qcom,port_phyinfo/port@0: port_id=<1>, forced-speed=<0x9c4>,
+		 * forced-duplex=<1>, and no phy_address), and marks port 1 as
+		 * LAN (switch_lan_bmp=<0x02> = BIT(1)). Both uniphys are set to
+		 * the same mac_mode (switch_mac_mode = switch_mac_mode1 =
+		 * <0x0c>), so both links run at the same 2.5G rate -- hence
+		 * 2500base-x with a 2500M fixed-link, not sgmii/1000M.
+		 */
 		port@1 {
 			reg = <1>;
 			phy-mode = "2500base-x";
-			label = "wan";
-			phy-handle = <&phy0>;
+			label = "lan";
 			pcs-handle = <&pcs0_ch0>;
 			local-mac-address = [00 00 00 00 00 00];
 			clocks = <&nsscc NSS_CC_PORT1_MAC_CLK>,
@@ -509,23 +518,36 @@
 			reset-names = "mac",
 				      "rx",
 				      "tx";
+
+			fixed-link {
+				speed = <2500>;
+				full-duplex;
+			};
 		};
 
 		/*
-		 * LAN is not a plain PHY at mdio address 0x07 -- confirmed live
-		 * via U-Boot (mii read 0x7 0/2/3 all return 0xffff, not a valid
-		 * Clause-22 response) that this is the Motorcomm YT9215S managed
-		 * switch chip ("YT9215S init done" in every boot's U-Boot log,
-		 * vendor kallsyms show a dedicated yt_switch.ko with its own
-		 * miwifi_mdio_read/write, a proprietary non-Clause-22 access
-		 * convention). No phylib-visible PHY exists on this SGMII link to
-		 * poll -- use fixed-link instead of phy-handle, matching how any
-		 * SoC-to-switch uplink is normally described.
+		 * WAN: the QCA8081 at mdio address 0x0c. Vendor's DT attaches
+		 * it to PPE port 2, not port 1 (qcom,port_phyinfo/port@1:
+		 * port_id=<2>, phy_address=<0x0c>, sec_phy_address=<0x07>), and
+		 * marks port 2 as WAN (switch_wan_bmp=<0x04> = BIT(2)). The
+		 * vendor's nss-dp netdevs agree: dp2 (qcom,id=<2>) is the one
+		 * carrying qcom,phy-mdio-addr=<0x0c> and qcom,link-poll=<1>,
+		 * while dp1 (qcom,id=<1>) has no phy and no link polling.
+		 *
+		 * Note the device at mdio address 0x07 is not a plain PHY --
+		 * confirmed live via U-Boot (mii read 0x7 0/2/3 all return
+		 * 0xffff, not a valid Clause-22 response): it is the Motorcomm
+		 * YT9215S managed switch ("YT9215S init done" in every boot's
+		 * U-Boot log; vendor kallsyms show a dedicated yt_switch.ko with
+		 * its own miwifi_mdio_read/write). Vendor lists it here only as
+		 * sec_phy_address; mainline has no driver for it, so it is left
+		 * out and the switch uplink is described by port@1's fixed-link.
 		 */
 		port@2 {
 			reg = <2>;
-			phy-mode = "sgmii";
-			label = "lan";
+			phy-mode = "2500base-x";
+			label = "wan";
+			phy-handle = <&phy0>;
 			pcs-handle = <&pcs1_ch0>;
 			local-mac-address = [00 00 00 00 00 00];
 			clocks = <&nsscc NSS_CC_PORT2_MAC_CLK>,
@@ -540,11 +562,6 @@
 			reset-names = "mac",
 				      "rx",
 				      "tx";
-
-			fixed-link {
-				speed = <1000>;
-				full-duplex;
-			};
 		};
 	};
 };
