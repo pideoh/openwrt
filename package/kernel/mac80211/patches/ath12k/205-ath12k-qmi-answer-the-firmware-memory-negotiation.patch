@@ -1,0 +1,100 @@
+ath12k: qmi: answer the firmware's memory negotiation properly
+
+Three things about how the fixed-memory path answers the firmware's
+QMI memory request, found by comparing against the vendor device tree
+on an IPQ5332 board.
+
+The firmware is told which memory profile to run. The vendor gives its
+wifi node a target memory mode of 2; ath12k's own enum stops at 1,
+because ath12k_mem_profile_based_param[] has only two entries, and the
+AHB path leaves the default. The profile sent over QMI is set here
+instead of through ab->target_mem_mode, which has to remain a valid
+index into that array.
+
+MLO_GLOBAL_MEM_REGION_TYPE was not handled at all. ipq5332.dtsi hands
+the wifi node mlo_global_mem as memory-region[3], but the switch has no
+case for it, so it fell through to default, was logged as an invalid
+type and -- because idx is not incremented and mem_seg_count is then
+set from idx -- dropped from the reply entirely. The firmware asks for
+a region, is told nothing about it, and falls back to its own default
+address. On this board every such default is past the last reservation,
+in memory Linux is using, which is consistent with what we see: PID 1
+taking an undefined instruction a few hundred milliseconds after the
+handshake, on some boots and not others.
+
+The requested chunks are also logged unconditionally for now. That
+should come out once this is understood; it is here because the
+negotiation is the ground truth everything else depends on and it was
+previously only visible under a debug mask.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -2763,6 +2763,40 @@
+ 			ab->qmi.target_mem[idx].type = ab->qmi.target_mem[i].type;
+ 			idx++;
+ 			break;
++		case MLO_GLOBAL_MEM_REGION_TYPE:
++			/* ipq5332.dtsi hands wifi0 mlo_global_mem as
++			 * memory-region[3], but the fixed-memory path never
++			 * looked at it: the chunk fell through to default, was
++			 * dropped from the reply, and the firmware was left to
++			 * place it wherever its own defaults say -- which on this
++			 * board is past the last reservation, in kernel RAM.
++			 */
++			rmem = ath12k_core_get_reserved_mem(ab, 3);
++			if (!rmem) {
++				ret = -EINVAL;
++				goto out;
++			}
++
++			if (rmem->size < ab->qmi.target_mem[i].size) {
++				ath12k_warn(ab, "mlo region too small: have %zu want %u\n",
++					    (size_t)rmem->size,
++					    ab->qmi.target_mem[i].size);
++				ret = -EINVAL;
++				goto out;
++			}
++
++			ab->qmi.target_mem[idx].paddr = rmem->base;
++			ab->qmi.target_mem[idx].v.ioaddr =
++				ioremap(ab->qmi.target_mem[idx].paddr,
++					ab->qmi.target_mem[i].size);
++			if (!ab->qmi.target_mem[idx].v.ioaddr) {
++				ret = -EIO;
++				goto out;
++			}
++			ab->qmi.target_mem[idx].size = ab->qmi.target_mem[i].size;
++			ab->qmi.target_mem[idx].type = ab->qmi.target_mem[i].type;
++			idx++;
++			break;
+ 		case M3_DUMP_REGION_TYPE:
+ 			rmem = ath12k_core_get_reserved_mem(ab, 1);
+ 			if (!rmem) {
+@@ -3659,6 +3693,8 @@
+ 		ab->qmi.target_mem[i].size = msg->mem_seg[i].size;
+ 		ath12k_dbg(ab, ATH12K_DBG_QMI, "qmi mem seg type %d size %d\n",
+ 			   msg->mem_seg[i].type, msg->mem_seg[i].size);
++		ath12k_warn(ab, "DBG: fw requests mem type %u size %u\n",
++			    msg->mem_seg[i].type, msg->mem_seg[i].size);
+ 	}
+ 
+ 	if (test_bit(ATH12K_FLAG_FIXED_MEM_REGION, &ab->dev_flags)) {
+@@ -3868,6 +3904,16 @@
+ 	ab->qmi.ab = ab;
+ 
+ 	ab->qmi.target_mem_mode = ab->target_mem_mode;
++
++	/* Boards with a fixed memory region are the on-chip radios, and the
++	 * vendor device tree gives them a target memory mode of 2. ath12k's
++	 * own enum stops at 1 because ath12k_mem_profile_based_param[] has
++	 * only two entries, so the profile the firmware is told to use is set
++	 * here rather than through ab->target_mem_mode, which has to stay a
++	 * valid index into that array.
++	 */
++	if (test_bit(ATH12K_FLAG_FIXED_MEM_REGION, &ab->dev_flags))
++		ab->qmi.target_mem_mode = 2;
+ 	ret = qmi_handle_init(&ab->qmi.handle, ATH12K_QMI_RESP_LEN_MAX,
+ 			      &ath12k_qmi_ops, ath12k_qmi_msg_handlers);
+ 	if (ret < 0) {

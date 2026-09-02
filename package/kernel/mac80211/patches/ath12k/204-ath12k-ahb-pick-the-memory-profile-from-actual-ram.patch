@@ -1,0 +1,44 @@
+ath12k: ahb: pick the memory profile from how much RAM there is
+
+ath12k has two memory profiles. The default one sizes the firmware's
+rings for a machine with memory to spare -- 17 vdevs, 32768 tx
+descriptors, 12288 rx descriptors, 512 clients -- and the low profile
+is roughly half that. ath12k_core_get_memory_mode() chooses between
+them by looking at totalram.
+
+The PCIe path calls it. The AHB path hardcodes the default:
+
+  ab->target_mem_mode = ATH12K_QMI_MEMORY_MODE_DEFAULT;
+
+so every AHB board tells its firmware, over QMI host_cap, that it has
+memory to spare regardless of the truth. On IPQ5332 with 512 MiB and
+about 48 MiB of that reserved for the Q6, totalram lands below the
+threshold and the low profile is the correct answer.
+
+The vendor device tree says as much in its own terms -- it carries
+qcom,tgt-mem-mode = <2> on the wifi node rather than leaving it at the
+default.
+
+Call the same helper the PCIe path does.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -1022,7 +1022,15 @@
+ 	ab->hif.ops = hif_ops;
+ 	ab->pdev = pdev;
+ 	ab->hw_rev = hw_rev;
+-	ab->target_mem_mode = ATH12K_QMI_MEMORY_MODE_DEFAULT;
++	/* Pick the memory profile from how much RAM Linux actually has,
++	 * the way the PCIe path already does. Hardcoding the default
++	 * profile tells the firmware to size its rings for a machine with
++	 * memory to spare -- 17 vdevs, 32768 tx descriptors, 12288 rx
++	 * descriptors -- which is not this one: 512 MiB with roughly 48 MiB
++	 * of it carved out for the Q6 leaves totalram below the threshold
++	 * that selects the low-memory profile.
++	 */
++	ab->target_mem_mode = ath12k_core_get_memory_mode(ab);
+ 	platform_set_drvdata(pdev, ab);
+ 	ab_ahb = ath12k_ab_to_ahb(ab);
+ 	ab_ahb->ab = ab;

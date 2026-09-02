@@ -175,6 +175,41 @@
 			reg = <0x0 0x4e700000 0x0 0x80000>;
 			no-map;
 		};
+
+		/*
+		 * Calibration database. The vendor device tree puts it at
+		 * 0x4d000000 and sizes it 5 MiB:
+		 *
+		 *   qcom,caldb-addr = <0x4d000000 0x4d000000 0 0 0 0>;
+		 *   qcom,caldb-size = <0x500000>;
+		 *
+		 * while the upstream dtsi's q6_caldb is 2 MiB at 0x4cb00000.
+		 * Handing the firmware a region smaller than it writes leaves
+		 * the tail landing wherever it falls, and 0x4cd00000-0x4ce00000
+		 * is not reserved at all. This overlaps q6_qcn6432_data, which
+		 * is deliberate -- the vendor has no separate caldb node for
+		 * the same reason.
+		 */
+		/*
+		 * Keep the top of RAM away from Linux, the way the vendor
+		 * does. Its kernel reports 458240K of 524288K physical with
+		 * only 16208K accounted for by carve-outs, so roughly 64 MiB
+		 * at the top is simply not memory it allocates from.
+		 *
+		 * Measured here: the firmware writes into whatever is left
+		 * free above the reservations. Fencing off 0x4e800000 upwards
+		 * to the end of RAM stops the panic; stopping at 0x52000000
+		 * or 0x5a000000 does not, so the writes reach the top.
+		 */
+		fw_scratch@5c000000 {
+			reg = <0x0 0x5c000000 0x0 0x4000000>;
+			no-map;
+		};
+
+		rn01_caldb: caldb@4d000000 {
+			reg = <0x0 0x4d000000 0x0 0x500000>;
+			no-map;
+		};
 	};
 };
 
@@ -297,6 +332,26 @@
 	 * mlo_global_mem, which matches the vendor's own pd1 node.
 	 */
 	qcom,rproc = <&wcss_upd1>;
+
+	/*
+	 * The firmware reports board id 0xff over QMI, which means "not
+	 * programmed", and ath12k then looks for a board-2.bin entry named
+	 * qmi-board-id=255. The vendor device tree states the real one:
+	 *
+	 *   qcom,board_id = <0x13>;
+	 *
+	 * Patch 701 lets that be supplied from DT. The property it reads is
+	 * spelled "board_id", without a vendor prefix.
+	 */
+	board_id = <19>;
+
+	/*
+	 * memory-region[2] is what patch 203 hands the firmware for its
+	 * calibration database, so point it at the region the vendor sizes
+	 * rather than the upstream 2 MiB q6_caldb.
+	 */
+	memory-region = <&q6_ipq5332_data>, <&m3_dump>, <&rn01_caldb>,
+			<&mlo_global_mem>;
 
 	qcom,calibration-variant = "RN01";
 	status = "okay";
