@@ -20,8 +20,7 @@
 	};
 
 	chosen {
-		/* DIAG: page_poison=1 -- catch a device writing into free RAM */
-		bootargs = "console=ttyMSM0,115200n8 page_poison=1";
+		bootargs = "console=ttyMSM0,115200n8";
 		/*
 		 * Xiaomi's u-boot sets "ubi.mtd=rootfs_1 root=mtd:ubi_rootfs
 		 * rootfstype=squashfs cnss2.enable_mlo_support=1 rootwait" --
@@ -41,7 +40,12 @@
 		 * for root device /dev/ubiblock0_1..." since nothing ever
 		 * creates that node.
 		 */
-		bootargs-append = " ubi.mtd=rootfs ubi.block=0,ubi_rootfs root=/dev/ubiblock0_1 rootfstype=squashfs rootwait";
+		/*
+		 * DIAG: page_poison=1 catches a device writing into free RAM.
+		 * It has to go here, not in bootargs -- u-boot supplies the
+		 * command line and the kernel only appends this property.
+		 */
+		bootargs-append = " ubi.mtd=rootfs ubi.block=0,ubi_rootfs root=/dev/ubiblock0_1 rootfstype=squashfs rootwait page_poison=1";
 		stdout-path = "serial0:115200n8";
 	};
 
@@ -197,6 +201,29 @@
 		 *     with caldb@4d000000 (0x4d000000--0x4d500000)
 		 */
 	};
+};
+
+/*
+ * The calibration database regions are 3 MiB, not the 2 MiB the upstream
+ * dtsi reserves.
+ *
+ * The firmware asks for 3145728 bytes of CALDB over QMI. The megabyte past
+ * the end of the 2 MiB reservation is ordinary Linux RAM, and the firmware
+ * writes it. A SIGILL report from a panicking boot puts the corrupted pages
+ * at 0x4cd4b498 and 0x4cd86dbc, both inside 0x4cd00000-0x4ce00000 -- exactly
+ * the gap between q6_caldb's end and q6_qcn6432_data. Three processes died
+ * in the same millisecond, all executing from libc.so, and their pages had
+ * been zeroed rather than written with data.
+ *
+ * At 3 MiB each region abuts the next with no gap left over, which is what
+ * those addresses say the firmware already assumes.
+ */
+&q6_caldb {
+	reg = <0x0 0x4cb00000 0x0 0x300000>;
+};
+
+&q6_caldb_qcn6432 {
+	reg = <0x0 0x4dd00000 0x0 0x300000>;
 };
 
 &q6v5_wcss {

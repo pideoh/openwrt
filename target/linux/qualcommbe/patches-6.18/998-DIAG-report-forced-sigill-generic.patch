@@ -1,0 +1,110 @@
+DIAG: report every forced SIGILL from the generic path
+
+Temporary, not for upstream.
+
+Companion to 999. That one hooks arm64's force_signal_inject(), which
+covers the five places arch/arm64/kernel/traps.c injects a signal. This
+one sits on the generic force_sig_fault_to_task() underneath it, so a
+SIGILL raised anywhere else is still reported with the page the process
+was executing from.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/kernel/signal.c
++++ b/kernel/signal.c
+@@ -1695,11 +1695,95 @@
+ 		force_sig(SIGSEGV);
+ }
+ 
++
++/*
++ * DIAG: report every forced SIGILL, wherever it is raised from.
++ *
++ * The arm64 hook in force_signal_inject() covers the five places
++ * arch/arm64/kernel/traps.c injects a signal. This one sits on the
++ * generic path underneath, so a SIGILL raised anywhere else still
++ * reports the page the process was executing from.
++ */
++static void diag_report_forced_sigill(int sig, int code, void __user *addr)
++{
++	struct pt_regs *regs = task_pt_regs(current);
++	struct mm_struct *mm = current->mm;
++	struct vm_area_struct *vma;
++	unsigned long pc;
++	phys_addr_t phys = 0;
++	u32 buf[8];
++	int i, n = 0;
++
++	if (sig != SIGILL || !regs || !user_mode(regs))
++		return;
++
++	pc = instruction_pointer(regs);
++	pr_err("DIAG gsigill: comm=%s pid=%d code=%d addr=%px pc=%016lx\n",
++	       current->comm, current->pid, code, addr, pc);
++
++	if (!mm || !mmap_read_trylock(mm))
++		return;
++
++	vma = find_vma(mm, pc);
++	if (vma)
++		pr_err("DIAG gsigill: vma %016lx-%016lx flags=%lx file=%s\n",
++		       vma->vm_start, vma->vm_end, vma->vm_flags,
++		       vma->vm_file ? (const char *)vma->vm_file->f_path.dentry->d_name.name
++				    : "(anon)");
++	else
++		pr_err("DIAG gsigill: no vma covers pc\n");
++
++	{
++		pgd_t *pgd = pgd_offset(mm, pc);
++		p4d_t *p4d;
++		pud_t *pud;
++		pmd_t *pmd;
++		pte_t *pte;
++
++		if (!pgd_none(*pgd) && !pgd_bad(*pgd)) {
++			p4d = p4d_offset(pgd, pc);
++			if (!p4d_none(*p4d) && !p4d_bad(*p4d)) {
++				pud = pud_offset(p4d, pc);
++				if (!pud_none(*pud) && !pud_bad(*pud)) {
++					pmd = pmd_offset(pud, pc);
++					if (!pmd_none(*pmd) && !pmd_bad(*pmd)) {
++						pte = pte_offset_kernel(pmd, pc);
++						if (pte && pte_present(*pte))
++							phys = (pte_pfn(*pte) << PAGE_SHIFT) |
++							       (pc & ~PAGE_MASK);
++					}
++				}
++			}
++		}
++	}
++	mmap_read_unlock(mm);
++
++	pr_err("DIAG gsigill: phys=%pa pfn=%lx\n",
++	       &phys, (unsigned long)(phys >> PAGE_SHIFT));
++
++	for (i = 0; i < 8; i++) {
++		u32 v;
++
++		if (get_user(v, (u32 __user *)(pc - 16 + i * 4)))
++			break;
++		buf[i] = v;
++		n++;
++	}
++	if (n) {
++		pr_err("DIAG gsigill: insn around pc (pc-16 first):\n");
++		for (i = 0; i < n; i++)
++			pr_cont(" %08x", buf[i]);
++		pr_cont("\n");
++	}
++}
++
+ int force_sig_fault_to_task(int sig, int code, void __user *addr,
+ 			    struct task_struct *t)
+ {
+ 	struct kernel_siginfo info;
+ 
++	diag_report_forced_sigill(sig, code, addr);
++
+ 	clear_siginfo(&info);
+ 	info.si_signo = sig;
+ 	info.si_errno = 0;

@@ -1,0 +1,102 @@
+DIAG: ath12k: mark each step of ath12k_core_start
+
+Temporary, not for upstream.
+
+All 25 datapath rings now complete, and the panic lands about 49 ms after
+the last one -- inside ath12k_core_start(), which runs thirteen steps in
+sequence. The first of them, ath12k_hif_start(), enables the copy engine
+interrupts and posts RX buffers, so it is the first point at which the
+firmware writes into memory the host allocated.
+
+Print a mark before each step so the log says which one is running when
+procd dies.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/core.c
++++ b/drivers/net/wireless/ath/ath12k/core.c
+@@ -904,48 +904,56 @@
+ 
+ 	lockdep_assert_held(&ab->core_lock);
+ 
++	ath12k_warn(ab, "DBG: start[00] ath12k_wmi_attach\n");
+ 	ret = ath12k_wmi_attach(ab);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to attach wmi: %d\n", ret);
+ 		return ret;
+ 	}
+ 
++	ath12k_warn(ab, "DBG: start[01] ath12k_htc_init\n");
+ 	ret = ath12k_htc_init(ab);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to init htc: %d\n", ret);
+ 		goto err_wmi_detach;
+ 	}
+ 
++	ath12k_warn(ab, "DBG: start[02] ath12k_hif_start\n");
+ 	ret = ath12k_hif_start(ab);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to start HIF: %d\n", ret);
+ 		goto err_wmi_detach;
+ 	}
+ 
++	ath12k_warn(ab, "DBG: start[03] ath12k_htc_wait_target\n");
+ 	ret = ath12k_htc_wait_target(&ab->htc);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to connect to HTC: %d\n", ret);
+ 		goto err_hif_stop;
+ 	}
+ 
++	ath12k_warn(ab, "DBG: start[04] ath12k_dp_htt_connect\n");
+ 	ret = ath12k_dp_htt_connect(&ab->dp);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to connect to HTT: %d\n", ret);
+ 		goto err_hif_stop;
+ 	}
+ 
++	ath12k_warn(ab, "DBG: start[05] ath12k_wmi_connect\n");
+ 	ret = ath12k_wmi_connect(ab);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to connect wmi: %d\n", ret);
+ 		goto err_hif_stop;
+ 	}
+ 
++	ath12k_warn(ab, "DBG: start[06] ath12k_htc_start\n");
+ 	ret = ath12k_htc_start(&ab->htc);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to start HTC: %d\n", ret);
+ 		goto err_hif_stop;
+ 	}
+ 
++	ath12k_warn(ab, "DBG: start[07] ath12k_wmi_wait_for_service_ready\n");
+ 	ret = ath12k_wmi_wait_for_service_ready(ab);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to receive wmi service ready event: %d\n",
+@@ -953,22 +961,27 @@
+ 		goto err_hif_stop;
+ 	}
+ 
++	ath12k_warn(ab, "DBG: start[08] ath12k_dp_cc_config\n");
+ 	ath12k_dp_cc_config(ab);
+ 
++	ath12k_warn(ab, "DBG: start[09] ath12k_dp_rx_pdev_reo_setup\n");
+ 	ret = ath12k_dp_rx_pdev_reo_setup(ab);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to initialize reo destination rings: %d\n", ret);
+ 		goto err_hif_stop;
+ 	}
+ 
++	ath12k_warn(ab, "DBG: start[10] ath12k_dp_hal_rx_desc_init\n");
+ 	ath12k_dp_hal_rx_desc_init(ab);
+ 
++	ath12k_warn(ab, "DBG: start[11] ath12k_wmi_cmd_init\n");
+ 	ret = ath12k_wmi_cmd_init(ab);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to send wmi init cmd: %d\n", ret);
+ 		goto err_reo_cleanup;
+ 	}
+ 
++	ath12k_warn(ab, "DBG: start[12] ath12k_wmi_wait_for_unified_ready\n");
+ 	ret = ath12k_wmi_wait_for_unified_ready(ab);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to receive wmi unified ready event: %d\n",
