@@ -161,10 +161,12 @@
 	 * after it signals ready. See WIFI.md and
 	 * boot-logs/vendor-q6-bringup-reference.log.
 	 *
-	 * The user PDs are renamed pd-1/pd-2 -> pd1/pd2 so that the asid
-	 * parsed from the node name agrees with the one derived from the
-	 * spawn bit (10 / 8 == 1, 18 / 8 == 2). Labels are unchanged, so
-	 * the wifi nodes point at the text PD instead (see &wifi0).
+	 * Moving the user PDs under the text PD means re-declaring them:
+	 * devicetree cannot reparent a node. Their properties are copied
+	 * verbatim from ipq5332.dtsi; only the node names change, from
+	 * pd-1/pd-2 to pd1/pd2, so that the asid parsed from the name
+	 * agrees with the one derived from the spawn bit (10 / 8 == 1,
+	 * 18 / 8 == 2).
 	 */
 	status = "okay";
 
@@ -172,45 +174,86 @@
 	/delete-node/ pd-2;
 
 	/*
-	 * Text PD.  Owns the WLAN text segment shared by both
-	 * user PDs; the vendor firmware requires this level to
-	 * exist between the root PD and the user PDs.  It has
-	 * no memory-region (it uses the root PD's), no smem
-	 * states and no interrupts, exactly like the vendor's
-	 * remoteproc_text_pd3 node.
+	 * Text PD. Owns the WLAN text segment shared by both user PDs. It
+	 * has no memory-region (it uses the root PD's), no smem states and
+	 * no interrupts, exactly like the vendor's remoteproc_text_pd3.
 	 *
-	 * The node name must end in "pd3": the driver derives
-	 * the PD asid (3, i.e. PAS id 0x312) from it, because
-	 * there is no spawn bit to derive it from.
+	 * The node name must end in "pd3": the driver derives the PD asid
+	 * (3, i.e. PAS id 0x312) from it, because there is no spawn bit to
+	 * derive it from.
 	 */
 	q6_wcss_text_pd3: text-pd3 {
 		compatible = "qcom,ipq5332-mpd-upd-text";
 		firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw3.mdt";
 
+		/* AHB attached radio (internal 2.4 GHz QCA5332 MAC) */
+		wcss_upd1: pd1 {
+			firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw1.mdt";
 
+			interrupts-extended = <&wcss_smp2p_in 8 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 9 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 12 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 11 IRQ_TYPE_NONE>;
+			interrupt-names = "fatal",
+					  "ready",
+					  "spawn-ack",
+					  "stop-ack";
+
+			qcom,smem-states = <&wcss_smp2p_out 8>,
+					   <&wcss_smp2p_out 9>,
+					   <&wcss_smp2p_out 10>;
+			qcom,smem-state-names = "shutdown",
+						"stop",
+						"spawn";
+		};
+
+		/* Companion radio PD (QCN6432 5 GHz on this SoC) */
+		wcss_upd2: pd2 {
+			firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw2.mdt";
+
+			interrupts-extended = <&wcss_smp2p_in 16 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 17 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 20 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 19 IRQ_TYPE_NONE>;
+			interrupt-names = "fatal",
+					  "ready",
+					  "spawn-ack",
+					  "stop-ack";
+
+			qcom,smem-states = <&wcss_smp2p_out 16>,
+					   <&wcss_smp2p_out 17>,
+					   <&wcss_smp2p_out 18>;
+			qcom,smem-state-names = "shutdown",
+						"stop",
+						"spawn";
+		};
 	};
 };
 
 &wifi0 {
 	/*
-	 * Point at the text PD rather than a user PD: rproc_boot() walks up
-	 * the parent chain, so booting the text PD brings the root PD up too,
-	 * which is the order the vendor firmware needs. ath12k_ahb loads the
-	 * user PD firmware (q6_fw<userpd_id>.mdt) and drives the spawn
-	 * handshake itself, so the mpd driver must not also claim those smp2p
-	 * interrupts -- hence no pd1/pd2 rproc children.
+	 * Point at the user PD, as the vendor DT does. remoteproc owns the
+	 * user PD -- image, PAS and spawn handshake -- and ath12k only
+	 * attaches to it; see patch 202 in package/kernel/mac80211.
+	 *
+	 * This has to be the user PD rather than the text PD because the
+	 * vendor firmware is linked for a single loader filling one region:
+	 *
+	 *   q6_fw0 (root)          - 0x4ab51000
+	 *   q6_fw3 (text) 0x4aefd000 - 0x4b297000
+	 *   q6_fw1 (pd1)  0x4b2a3000 - 0x4b55b000
+	 *   q6_fw2 (pd2)  0x4b563000 - 0x4b81b000
+	 *
+	 * q6_fw1 sits below q6_ipq5332_data (0x4bd00000), so ath12k loading
+	 * it into memory-region[0] itself fails as "segment outside memory
+	 * range"; pointing memory-region at the whole q6_region instead
+	 * lets the load succeed but then kills the running root PD.
+	 *
+	 * memory-region is deliberately not overridden here: the upstream
+	 * dtsi already points it at q6_ipq5332_data / m3_dump / q6_caldb /
+	 * mlo_global_mem, which matches the vendor's own pd1 node.
 	 */
-	qcom,rproc = <&q6_wcss_text_pd3>;
-
-	/*
-	 * ath12k_ahb loads the user PD image itself with qcom_mdt_load()
-	 * into memory-region[0]. The vendor's q6_fw1.mdt carries segment
-	 * addresses relative to the whole Q6 region, not to the smaller
-	 * per-PD data window the upstream dtsi points here, which fails as
-	 * "segment outside memory range". Give it the full root region.
-	 */
-	memory-region = <&q6_region>, <&m3_dump>, <&q6_caldb>,
-			<&mlo_global_mem>;
+	qcom,rproc = <&wcss_upd1>;
 
 	qcom,calibration-variant = "RN01";
 	status = "okay";
@@ -231,7 +274,7 @@
  * Enable this once ath12k actually supports the chip.
  */
 &wifi1 {
-	qcom,rproc = <&q6_wcss_text_pd3>;
+	qcom,rproc = <&wcss_upd2>;
 	qcom,calibration-variant = "RN01";
 	status = "disabled";
 };
