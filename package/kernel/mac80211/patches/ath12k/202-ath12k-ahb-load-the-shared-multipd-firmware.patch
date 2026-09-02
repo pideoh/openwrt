@@ -1,0 +1,122 @@
+ath12k: ahb: load the shared multi-PD firmware
+
+On multi-PD parts the user PD images carry only their private data. The
+read-only text every user PD executes lives in a separate image, and it
+has to be loaded and authenticated once before any user PD is spawned.
+ath12k does not load it, so the Q6 takes a fatal error with no message as
+soon as the first user PD starts:
+
+  qcom-q6-mpd d100000.remoteproc: fatal error without message
+
+Load it from ath12k_ahb_power_up(), into the same reserved region as the
+user PDs and under its own PAS id, before the user PD image is requested.
+
+This mirrors the approach of "wifi: ath12k: add support to load shared
+firmware on multiPD" [1], adapted to backports 7.2, which predates the
+ath12k common/Wi-Fi 7 split and the per-radio rproc_info the upstream
+patch stores the mapping in. Here power_up() already has the mapping in
+hand, so the image is loaded from there.
+
+[1] https://lore.kernel.org/linux-wireless/20260811054316.518494-1-aaradhana.sahu@oss.qualcomm.com/
+
+Tested on a Xiaomi BE3600 Pro (IPQ5332), firmware
+WLAN.WBE.1.3.2-00067-QCAHKSWPL_SILICONZ-1.128291.1.135427.1.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/ahb.h
++++ b/drivers/net/wireless/ath/ath12k/ahb.h
+@@ -23,6 +23,12 @@
+ #define ATH12K_AHB_FW_SUFFIX			".mdt"
+ #define ATH12K_AHB_FW2				"iu_fw.mdt"
+ #define ATH12K_AHB_UPD_SWID			0x12
++
++/* Shared read-only firmware ID, mandated by the multi-PD firmware
++ * architecture: one image holds the read-only text every user PD executes,
++ * loaded once before any of them are spawned.
++ */
++#define ATH12K_AHB_RO_ID			3
+ #define ATH12K_USERPD_SPAWN_TIMEOUT		(5 * HZ)
+ #define ATH12K_USERPD_READY_TIMEOUT		(10 * HZ)
+ #define ATH12K_USERPD_STOP_TIMEOUT		(5 * HZ)
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -338,6 +338,67 @@
+ 	ath12k_ce_cleanup_pipes(ab);
+ }
+ 
++
++/* Load the shared read-only firmware image.
++ *
++ * On multi-PD parts the user PD images carry only their private data; the
++ * read-only text they all execute lives in a separate image that has to be
++ * loaded and authenticated once, before any user PD is spawned. Without it
++ * the Q6 takes a fatal error with no message as soon as the first user PD
++ * starts running.
++ *
++ * The image is loaded into the same reserved region as the user PDs, under
++ * its own PAS id, and is left running for the lifetime of the radio.
++ */
++static int ath12k_ahb_load_shared_fw(struct ath12k_base *ab,
++				     void *mem_region, phys_addr_t mem_phys,
++				     size_t mem_size)
++{
++	char fw_name[ATH12K_USERPD_FW_NAME_LEN];
++	struct device *dev = ab->dev;
++	const struct firmware *fw;
++	u32 pasid;
++	int ret;
++
++	snprintf(fw_name, sizeof(fw_name), "%s/%s/%s%d%s", ATH12K_FW_DIR,
++		 ab->hw_params->fw.dir, ATH12K_AHB_FW_PREFIX, ATH12K_AHB_RO_ID,
++		 ATH12K_AHB_FW_SUFFIX);
++
++	ret = request_firmware(&fw, fw_name, dev);
++	if (ret < 0) {
++		ath12k_err(ab, "failed to request shared firmware %s: %d\n",
++			   fw_name, ret);
++		return ret;
++	}
++
++	if (!fw->size) {
++		ath12k_err(ab, "invalid shared firmware size\n");
++		ret = -EINVAL;
++		goto out;
++	}
++
++	ath12k_dbg(ab, ATH12K_DBG_AHB, "Booting fw image %s, size %zd\n",
++		   fw_name, fw->size);
++
++	pasid = u32_encode_bits(ATH12K_AHB_RO_ID, ATH12K_USERPD_ID_MASK) |
++		ATH12K_AHB_UPD_SWID;
++
++	ret = qcom_mdt_load(dev, fw, fw_name, pasid, mem_region, mem_phys,
++			    mem_size, NULL);
++	if (ret) {
++		ath12k_err(ab, "failed to load shared firmware: %d\n", ret);
++		goto out;
++	}
++
++	ret = qcom_scm_pas_auth_and_reset(pasid);
++	if (ret)
++		ath12k_err(ab, "failed to boot shared firmware: %d\n", ret);
++
++out:
++	release_firmware(fw);
++	return ret;
++}
++
+ static int ath12k_ahb_power_up(struct ath12k_base *ab)
+ {
+ 	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+@@ -366,6 +427,10 @@
+ 		return PTR_ERR(mem_region);
+ 	}
+ 
++	ret = ath12k_ahb_load_shared_fw(ab, mem_region, mem_phys, mem_size);
++	if (ret)
++		return ret;
++
+ 	snprintf(fw_name, sizeof(fw_name), "%s/%s/%s%d%s", ATH12K_FW_DIR,
+ 		 ab->hw_params->fw.dir, ATH12K_AHB_FW_PREFIX, ab_ahb->userpd_id,
+ 		 ATH12K_AHB_FW_SUFFIX);

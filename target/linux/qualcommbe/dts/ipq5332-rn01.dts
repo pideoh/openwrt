@@ -241,79 +241,31 @@
 
 
 	/*
-	 * Restructure the PD hierarchy to match what the vendor firmware
-	 * expects: root PD -> text PD -> user PDs. The upstream dtsi models
-	 * only two levels, which leaves the Q6 faulting a few milliseconds
-	 * after it signals ready. See WIFI.md and
-	 * boot-logs/vendor-q6-bringup-reference.log.
+	 * The multi-PD hierarchy is left as ipq5332.dtsi describes it.
 	 *
-	 * Moving the user PDs under the text PD means re-declaring them:
-	 * devicetree cannot reparent a node. Their properties are copied
-	 * verbatim from ipq5332.dtsi; only the node names change, from
-	 * pd-1/pd-2 to pd1/pd2, so that the asid parsed from the name
-	 * agrees with the one derived from the spawn bit (10 / 8 == 1,
-	 * 18 / 8 == 2).
+	 * The vendor device tree carries a text PD between the root PD and
+	 * the user PDs, and remoteproc's binding has no way to express one.
+	 * That level is real, but it belongs to ath12k rather than to
+	 * remoteproc: ath12k owns the text PD and the user PDs, loading the
+	 * shared read-only image and each user PD image itself, while
+	 * qcom_q6v5_mpd manages only the root PD.
+	 *
+	 *   https://lore.kernel.org/linux-remoteproc/741d7c3e-6eea-4a84-bf4c-8d8eb8032c83@oss.qualcomm.com/
+	 *
+	 * So the user PD nodes are removed here. Leaving them in place makes
+	 * qcom_q6v5_mpd instantiate an rproc for each, and it then holds the
+	 * spawn interrupt that ath12k needs:
+	 *
+	 *   genirq: Flags mismatch irq 31. 00002001 (UserPD1-spawn)
+	 *           vs. 00002001 (q6v5_wcss_userpd1_spawn-ack)
+	 *   ath12k_ahb c000000.wifi: Request spawn irq failed: -16
+	 *
+	 * and qcom,rproc below points at the root PD.
 	 */
 	status = "okay";
 
 	/delete-node/ pd-1;
 	/delete-node/ pd-2;
-
-	/*
-	 * Text PD. Owns the WLAN text segment shared by both user PDs. It
-	 * has no memory-region (it uses the root PD's), no smem states and
-	 * no interrupts, exactly like the vendor's remoteproc_text_pd3.
-	 *
-	 * The node name must end in "pd3": the driver derives the PD asid
-	 * (3, i.e. PAS id 0x312) from it, because there is no spawn bit to
-	 * derive it from.
-	 */
-	q6_wcss_text_pd3: text-pd3 {
-		compatible = "qcom,ipq5332-mpd-upd-text";
-		firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw3.mdt";
-
-		/* AHB attached radio (internal 2.4 GHz QCA5332 MAC) */
-		wcss_upd1: pd1 {
-			firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw1.mdt";
-
-			interrupts-extended = <&wcss_smp2p_in 8 IRQ_TYPE_NONE>,
-					      <&wcss_smp2p_in 9 IRQ_TYPE_NONE>,
-					      <&wcss_smp2p_in 12 IRQ_TYPE_NONE>,
-					      <&wcss_smp2p_in 11 IRQ_TYPE_NONE>;
-			interrupt-names = "fatal",
-					  "ready",
-					  "spawn-ack",
-					  "stop-ack";
-
-			qcom,smem-states = <&wcss_smp2p_out 8>,
-					   <&wcss_smp2p_out 9>,
-					   <&wcss_smp2p_out 10>;
-			qcom,smem-state-names = "shutdown",
-						"stop",
-						"spawn";
-		};
-
-		/* Companion radio PD (QCN6432 5 GHz on this SoC) */
-		wcss_upd2: pd2 {
-			firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw2.mdt";
-
-			interrupts-extended = <&wcss_smp2p_in 16 IRQ_TYPE_NONE>,
-					      <&wcss_smp2p_in 17 IRQ_TYPE_NONE>,
-					      <&wcss_smp2p_in 20 IRQ_TYPE_NONE>,
-					      <&wcss_smp2p_in 19 IRQ_TYPE_NONE>;
-			interrupt-names = "fatal",
-					  "ready",
-					  "spawn-ack",
-					  "stop-ack";
-
-			qcom,smem-states = <&wcss_smp2p_out 16>,
-					   <&wcss_smp2p_out 17>,
-					   <&wcss_smp2p_out 18>;
-			qcom,smem-state-names = "shutdown",
-						"stop",
-						"spawn";
-		};
-	};
 };
 
 &wifi0 {
@@ -331,15 +283,35 @@
 	 *   q6_fw2 (pd2)  0x4b563000 - 0x4b81b000
 	 *
 	 * q6_fw1 sits below q6_ipq5332_data (0x4bd00000), so ath12k loading
-	 * it into memory-region[0] itself fails as "segment outside memory
-	 * range"; pointing memory-region at the whole q6_region instead
-	 * lets the load succeed but then kills the running root PD.
 	 *
 	 * memory-region is deliberately not overridden here: the upstream
 	 * dtsi already points it at q6_ipq5332_data / m3_dump / q6_caldb /
 	 * mlo_global_mem, which matches the vendor's own pd1 node.
 	 */
-	qcom,rproc = <&wcss_upd1>;
+	/*
+	 * The shared read-only image and the user PD images all load into
+	 * the root PD's window, not into q6_ipq5332_data.
+	 *
+	 *   q6_fw3 (shared RO)   0x4aefd000 - 0x4b296000
+	 *   q6_fw1 (pd1)         0x4b2a3000 - 0x4b55b000
+	 *   q6_region            0x4a900000 - 0x4ca00000
+	 *   q6_ipq5332_data      0x4bd00000 - 0x4ca00000
+	 *
+	 * The upstream dtsi points wifi0's memory-region[0] at
+	 * q6_ipq5332_data, which starts above where those images link, so
+	 * qcom_mdt_load() refuses them:
+	 *
+	 *   ath12k_ahb c000000.wifi: segment outside memory range
+	 *   ath12k_ahb c000000.wifi: failed to load shared firmware: -22
+	 *
+	 * Point it at q6_region instead. The remaining entries keep their
+	 * meaning: index 1 is the M3 dump, 2 the calibration database and
+	 * 3 the MLO global memory.
+	 */
+	memory-region = <&q6_region>, <&m3_dump>, <&q6_caldb>,
+			<&mlo_global_mem>;
+
+	qcom,rproc = <&q6v5_wcss>;
 
 	/*
 	 * The firmware reports board id 0xff over QMI, which means "not
@@ -381,7 +353,7 @@
  * Enable this once ath12k actually supports the chip.
  */
 &wifi1 {
-	qcom,rproc = <&wcss_upd2>;
+	qcom,rproc = <&q6v5_wcss>;
 	qcom,calibration-variant = "RN01";
 	status = "disabled";
 };

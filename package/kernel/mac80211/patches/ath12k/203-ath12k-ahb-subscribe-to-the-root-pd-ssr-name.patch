@@ -1,0 +1,61 @@
+ath12k: ahb: subscribe to the root PD's SSR name
+
+ath12k_ahb_register_rproc_notifier() passes rproc->name to
+qcom_register_ssr_notifier(), but that function is keyed by the SSR name a
+remoteproc driver registers with qcom_add_ssr_subdev(), not by the
+remoteproc's own name.
+
+For the WCSS root PD those differ. qcom_q6v5_mpd registers "q6wcss", the
+same short logical name qcom_q6v5_wcss.c uses, while rproc->name is the
+device tree node name -- "d100000.remoteproc" on IPQ5332. Subscribing with
+the latter registers against a name nothing signals, so the root PD boots
+and ath12k waits for a notification that cannot arrive:
+
+  remoteproc remoteproc0: remote processor d100000.remoteproc is now up
+  ath12k_ahb c000000.wifi: RootPD ready wait timed out
+  ath12k_ahb c000000.wifi: failed to boot the remote processor Q6
+  ath12k_ahb c000000.wifi: probe with driver ath12k_ahb failed with error -110
+
+Use the SSR name instead.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/ahb.h
++++ b/drivers/net/wireless/ath/ath12k/ahb.h
+@@ -22,6 +22,11 @@
+ #define ATH12K_AHB_FW_PREFIX			"q6_fw"
+ #define ATH12K_AHB_FW_SUFFIX			".mdt"
+ #define ATH12K_AHB_FW2				"iu_fw.mdt"
++
++/* SSR name the WCSS root PD registers with, matching qcom_q6v5_mpd's
++ * qcom_add_ssr_subdev() call.
++ */
++#define ATH12K_AHB_ROOTPD_SSR_NAME		"q6wcss"
+ #define ATH12K_AHB_UPD_SWID			0x12
+ 
+ /* Shared read-only firmware ID, mandated by the multi-PD firmware
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -862,7 +862,21 @@
+ 	ab_ahb->root_pd_nb.notifier_call = ath12k_ahb_root_pd_state_notifier;
+ 	init_completion(&ab_ahb->rootpd_ready);
+ 
+-	ab_ahb->root_pd_notifier = qcom_register_ssr_notifier(ab_ahb->tgt_rproc->name,
++	/* The SSR notifier is keyed by the remoteproc's *SSR name*, which is
++	 * the short logical name the remoteproc driver passes to
++	 * qcom_add_ssr_subdev() -- "q6wcss" for the WCSS root PD, the same
++	 * way qcom_q6v5_wcss.c names it, and "mpss" for the modem. It is not
++	 * rproc->name, which is the device tree node name
++	 * ("d100000.remoteproc" here).
++	 *
++	 * Subscribing with rproc->name registers against a name nothing ever
++	 * signals, so the root PD comes up and this driver waits for a
++	 * notification that cannot arrive:
++	 *
++	 *   remoteproc remoteproc0: remote processor d100000.remoteproc is now up
++	 *   ath12k_ahb c000000.wifi: RootPD ready wait timed out
++	 */
++	ab_ahb->root_pd_notifier = qcom_register_ssr_notifier(ATH12K_AHB_ROOTPD_SSR_NAME,
+ 							      &ab_ahb->root_pd_nb);
+ 	if (IS_ERR(ab_ahb->root_pd_notifier))
+ 		return PTR_ERR(ab_ahb->root_pd_notifier);
