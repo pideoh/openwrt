@@ -180,6 +180,24 @@
 
 &q6v5_wcss {
 	/*
+	 * Load the QCN6432 M3 image as well. One Q6 serves both radios, and
+	 * the vendor loads two:
+	 *
+	 *   qcom-q6-mpd: m3 firmware IPQ5332/iu_fw.mdt loaded to DDR
+	 *   qcom-q6-mpd: m3 firmware qcn6432/iu_fw.mdt loaded to DDR
+	 *
+	 * while ipq5332.dtsi lists only the first. The driver already walks
+	 * the whole firmware-name array (MAX_FIRMWARE is 3), so a third
+	 * entry is enough. Upstream has never booted this firmware -- there
+	 * is no upstream firmware for IPQ5332 -- so its two-entry list has
+	 * not been tested against a real Q6.
+	 */
+	firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw0.mdt",
+			"ath12k/IPQ5332/hw1.0/iu_fw.mdt",
+			"ath12k/QCN6432/hw1.0/iu_fw.mdt";
+
+
+	/*
 	 * Restructure the PD hierarchy to match what the vendor firmware
 	 * expects: root PD -> text PD -> user PDs. The upstream dtsi models
 	 * only two levels, which leaves the Q6 faulting a few milliseconds
