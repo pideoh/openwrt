@@ -20,7 +20,8 @@
 	};
 
 	chosen {
-		bootargs = "console=ttyMSM0,115200n8";
+		/* DIAG: page_poison=1 -- catch a device writing into free RAM */
+		bootargs = "console=ttyMSM0,115200n8 page_poison=1";
 		/*
 		 * Xiaomi's u-boot sets "ubi.mtd=rootfs_1 root=mtd:ubi_rootfs
 		 * rootfstype=squashfs cnss2.enable_mlo_support=1 rootwait" --
