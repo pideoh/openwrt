@@ -1,0 +1,459 @@
+From: Hideo Sumi <hideo.sumi@mugops.com>
+Subject: [PATCH] remoteproc: qcom_q6v5_mpd: add text PD support for IPQ5332
+
+Local, not for upstream in this form. See below.
+
+The vendor firmware for this part expects three PD levels:
+
+  q6v5_wcss   qcom,ipq5332-q6-mpd        q6_fw0.mdt   root PD
+    text-pd   qcom,ipq5332-mpd-upd-text  q6_fw3.mdt   shared read-only text
+      pd1                                q6_fw1.mdt   user PD
+      pd2                                q6_fw2.mdt   user PD
+
+qcom_q6v5_mpd models only two, and without the middle one the root PD
+stops a few milliseconds after signalling ready:
+
+  qcom-q6-mpd d100000.remoteproc: fatal error without message
+
+This adds the level: q6_register_userpd() recurses so a PD node may have
+children, the PD asid comes from the node name when there is no spawn
+smem-state to derive it from, and each PD's parent is booted before it is
+loaded.
+
+Upstream's intended division of labour is different. Per Aaradhana Sahu:
+
+  The intended model is that the root PD is completely managed by
+  qcom_q6v5_mpd, while the Text PD and WiFi User PDs are managed by
+  ath12k. ... So, qcom,rproc in the ath12k DT is expected to point to
+  the root PD.
+
+  https://lore.kernel.org/linux-remoteproc/741d7c3e-6eea-4a84-bf4c-8d8eb8032c83@oss.qualcomm.com/
+
+That model was implemented on the rn01-upstream-multipd branch and does
+not boot: the root PD learns each user PD's load address from SMEM item
+507, written by this driver's share_upd_bootinfo_to_q6() walking the user
+PD rprocs it created. With the user PD nodes removed, as that model
+requires, the list is empty and the firmware stops with
+
+  pd_stubs.c:137  Invalid user-pd CS load address 0x0
+
+So this patch stays until that is settled upstream. It is carried here to
+have working WiFi, not as a proposal.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -87,6 +87,7 @@
+ 	const struct wcss_data *desc;
+ 	const char **firmware;
+ 	struct userpd *upd[MAX_UPD];
++	struct userpd *tpd;
+ };
+ 
+ struct userpd {
+@@ -94,6 +95,13 @@
+ 	struct device *dev;
+ 	struct qcom_rproc_ssr ssr_subdev;
+ 	struct qcom_q6v5 q6;
++	/* Root PD: owns the memory region every PD image is loaded into */
++	struct q6_wcss *rpd;
++	/* Immediate parent in the PD hierarchy: root PD for a text PD,
++	 * text PD for a user PD sitting below one. Booted before this PD
++	 * is loaded and shut down after this PD stops.
++	 */
++	struct rproc *parent_rproc;
+ };
+ 
+ struct wcss_data {
+@@ -116,6 +124,32 @@
+ 	return bit / 8;
+ }
+ 
++/**
++ * qcom_get_pd_asid_from_node() - get the pd asid from the DT node name
++ * @node:	device node of the PD
++ *
++ * A text PD has no spawn smem-state, so its asid cannot be derived from a
++ * spawn bit. Parse it out of the node name instead, the way the vendor
++ * driver does for every PD ("...pd<N>" -> N).
++ *
++ * Returns asid on success, 0 if the name carries no PD number.
++ */
++static u8 qcom_get_pd_asid_from_node(struct device_node *node)
++{
++	const char *str;
++	u8 pd_asid;
++
++	str = strstr(node->name, "pd");
++	if (!str)
++		return 0;
++
++	str += strlen("pd");
++	if (kstrtou8(str, 10, &pd_asid))
++		return 0;
++
++	return pd_asid;
++}
++
+ static int q6_wcss_start(struct rproc *rproc)
+ {
+ 	struct q6_wcss *wcss = rproc->priv;
+@@ -223,7 +257,7 @@
+ static int wcss_pd_stop(struct rproc *rproc)
+ {
+ 	struct userpd *upd = rproc->priv;
+-	struct rproc *rpd_rproc = dev_get_drvdata(upd->dev->parent);
++	struct rproc *rpd_rproc = upd->parent_rproc;
+ 	u32 pasid = (upd->pd_asid << 8) | UPD_SWID;
+ 	int ret;
+ 
+@@ -276,19 +310,61 @@
+  *
+  * Returns 0 on success else negative value on failure.
+  */
++/**
++ * copy_upd_bootinfo() - append one PD's boot info entry to the SMEM blob
++ * @upd:	user or text PD handle
++ * @ptr:	current write position in the SMEM item, advanced on success
++ *
++ * Mirrors the vendor's copy_userpd_bootargs() (qsdk_mpd.c:724-773).
++ */
++static int copy_upd_bootinfo(struct userpd *upd, void **ptr)
++{
++	struct userpd_boot_info upd_bootinfo = {0};
++	const struct firmware *fw;
++	int ret;
++
++	/* TYPE */
++	upd_bootinfo.header.type = UPD_BOOT_INFO_HEADER_TYPE;
++
++	/* LENGTH */
++	upd_bootinfo.header.length =
++		sizeof(upd_bootinfo) - sizeof(upd_bootinfo.header);
++
++	/* Process ID */
++	upd_bootinfo.pid = upd->pd_asid + 1;
++
++	ret = request_firmware(&fw, upd->q6.rproc->firmware, upd->dev);
++	if (ret < 0) {
++		dev_err(upd->dev, "request_firmware failed: %d\n", ret);
++		return ret;
++	}
++
++	/* Load address */
++	upd_bootinfo.bootaddr = rproc_get_boot_addr(upd->q6.rproc, fw);
++
++	/* Firmware mem size */
++	upd_bootinfo.data_size = qcom_mdt_get_size(fw);
++
++	release_firmware(fw);
++
++	/* copy into smem */
++	memcpy_toio(*ptr, &upd_bootinfo, sizeof(upd_bootinfo));
++	*ptr += sizeof(upd_bootinfo);
++
++	return 0;
++}
++
+ static int share_upd_bootinfo_to_q6(struct rproc *rproc)
+ {
+ 	int i, ret;
+ 	u32 rd_val;
+ 	size_t size;
+-	u16 cnt = 0, version;
+-	void *ptr;
++	u16 cnt = 0, total = 0, version;
++	void *ptr, *cnt_ptr;
+ 	u8 *bootargs_arr;
+ 	struct q6_wcss *wcss = rproc->priv;
+ 	struct device_node *np = wcss->dev->of_node;
+-	struct userpd *upd;
+ 	struct userpd_boot_info upd_bootinfo = {0};
+-	const struct firmware *fw;
+ 
+ 	ret = qcom_smem_alloc(REMOTE_PID, UPD_BOOT_INFO_SMEM_ID,
+ 			      UPD_BOOT_INFO_SMEM_SIZE);
+@@ -320,7 +396,13 @@
+ 		cnt = 0;
+ 	}
+ 
+-	/* No of elements */
++	/* No of elements: this single u16 is the byte count of EVERYTHING
++	 * that follows it (boot-args bytes + PD entries). The vendor writes
++	 * the boot-args count here first and then adds the PD entries to it
++	 * in place, so remember where it is.
++	 */
++	cnt_ptr = ptr;
++	total = cnt;
+ 	memcpy_toio(ptr, &cnt, sizeof(u16));
+ 	ptr += sizeof(u16);
+ 
+@@ -348,48 +430,33 @@
+ 	kfree(bootargs_arr);
+ 	cnt = 0;
+ 
+-	for (i = 0; i < ARRAY_SIZE(wcss->upd); i++)
+-		if (wcss->upd[i])
+-			cnt++;
++	/* Depth first: the text PD, then the user PDs below it. The vendor
++	 * walks the DT the same way (qsdk_mpd.c:802-816), so the Q6 sees
++	 * pid 4 (text pd3), pid 2 (pd1), pid 3 (pd2) in that order.
++	 */
++	if (wcss->tpd) {
++		ret = copy_upd_bootinfo(wcss->tpd, &ptr);
++		if (ret)
++			return ret;
++		cnt++;
++	}
+ 
+-	/* No of elements */
+-	cnt = (sizeof(upd_bootinfo) * cnt);
+-	memcpy_toio(ptr, &cnt, sizeof(u16));
+-	ptr += sizeof(u16);
+-
+ 	for (i = 0; i < ARRAY_SIZE(wcss->upd); i++) {
+-		upd = wcss->upd[i];
+-		if (!upd)
++		if (!wcss->upd[i])
+ 			continue;
+ 
+-		/* TYPE */
+-		upd_bootinfo.header.type = UPD_BOOT_INFO_HEADER_TYPE;
+-
+-		/* LENGTH */
+-		upd_bootinfo.header.length =
+-			sizeof(upd_bootinfo) - sizeof(upd_bootinfo.header);
+-
+-		/* Process ID */
+-		upd_bootinfo.pid = upd->pd_asid + 1;
+-
+-		ret = request_firmware(&fw, upd->q6.rproc->firmware, upd->dev);
+-		if (ret < 0) {
+-			dev_err(upd->dev, "request_firmware failed: %d\n",	ret);
++		ret = copy_upd_bootinfo(wcss->upd[i], &ptr);
++		if (ret)
+ 			return ret;
+-		}
+-
+-		/* Load address */
+-		upd_bootinfo.bootaddr = rproc_get_boot_addr(upd->q6.rproc, fw);
++		cnt++;
++	}
+ 
+-		/* Firmware mem size */
+-		upd_bootinfo.data_size = qcom_mdt_get_size(fw);
++	/* One cumulative count for the whole blob, rewritten in place -
++	 * there is no second count field in front of the PD entries.
++	 */
++	total += sizeof(upd_bootinfo) * cnt;
++	memcpy_toio(cnt_ptr, &total, sizeof(u16));
+ 
+-		release_firmware(fw);
+-
+-		/* copy into smem */
+-		memcpy_toio(ptr, &upd_bootinfo, sizeof(upd_bootinfo));
+-		ptr += sizeof(upd_bootinfo);
+-	}
+ 	return 0;
+ }
+ 
+@@ -479,8 +546,8 @@
+ static int wcss_pd_load(struct rproc *rproc, const struct firmware *fw)
+ {
+ 	struct userpd *upd = rproc->priv;
+-	struct rproc *rpd_rproc = dev_get_drvdata(upd->dev->parent);
+-	struct q6_wcss *wcss = rpd_rproc->priv;
++	struct rproc *rpd_rproc = upd->parent_rproc;
++	struct q6_wcss *wcss = upd->rpd;
+ 	u32 pasid = (upd->pd_asid << 8) | UPD_SWID;
+ 	int ret;
+ 
+@@ -501,6 +568,46 @@
+ 	return qcom_q6v5_panic(&wcss->q6);
+ }
+ 
++/**
++ * wcss_text_pd_start() - authenticate and release the text PD
++ * @rproc:	rproc handle
++ *
++ * The text PD holds the WLAN text segment shared by the user PDs. It is
++ * brought up through PAS like the root PD, and it has no spawn state, so
++ * there is nothing to request a spawn for.
++ */
++static int wcss_text_pd_start(struct rproc *rproc)
++{
++	struct userpd *upd = rproc->priv;
++	u32 pasid = (upd->pd_asid << 8) | UPD_SWID;
++	int ret;
++
++	ret = qcom_scm_pas_auth_and_reset(pasid);
++	if (ret)
++		dev_err(upd->dev, "failed to power up text pd (pasid 0x%x)\n",
++			pasid);
++
++	return ret;
++}
++
++static int wcss_text_pd_stop(struct rproc *rproc)
++{
++	struct userpd *upd = rproc->priv;
++	u32 pasid = (upd->pd_asid << 8) | UPD_SWID;
++	int ret;
++
++	ret = qcom_scm_pas_shutdown(pasid);
++	if (ret) {
++		dev_err(upd->dev, "failed to power down text pd\n");
++		return ret;
++	}
++
++	if (rproc->state != RPROC_CRASHED)
++		rproc_shutdown(upd->parent_rproc);
++
++	return 0;
++}
++
+ static const struct rproc_ops wcss_ops = {
+ 	.start = wcss_pd_start,
+ 	.stop = wcss_pd_stop,
+@@ -508,6 +615,13 @@
+ 	.get_boot_addr = rproc_elf_get_boot_addr,
+ };
+ 
++static const struct rproc_ops text_pd_ops = {
++	.start = wcss_text_pd_start,
++	.stop = wcss_text_pd_stop,
++	.load = wcss_pd_load,
++	.get_boot_addr = rproc_elf_get_boot_addr,
++};
++
+ static const struct rproc_ops q6_wcss_ops = {
+ 	.start = q6_wcss_start,
+ 	.stop = q6_wcss_stop,
+@@ -665,18 +779,30 @@
+ 
+ 		rproc_del(upd->q6.rproc);
+ 		rproc_free(upd->q6.rproc);
++	}
++
++	/* Release the text pd after the user pds below it */
++	if (wcss->tpd) {
++		rproc_del(wcss->tpd->q6.rproc);
++		rproc_free(wcss->tpd->q6.rproc);
++		wcss->tpd = NULL;
+ 	}
+ }
+ 
+ static int q6_register_userpd(struct q6_wcss *wcss,
++			      struct rproc *parent_rproc,
++			      struct device *parent_dev,
+ 			      struct device_node *userpd_np)
+ {
++	const struct rproc_ops *ops = &wcss_ops;
++	struct device_node *child_np;
+ 	struct userpd *upd;
+ 	struct rproc *rproc = NULL;
+ 	int ret;
+ 	struct platform_device *userpd_pdev;
+ 	const char *firmware_name = NULL;
+ 	const char *label = NULL;
++	bool is_text_pd;
+ 
+ 	ret = of_property_read_string(userpd_np, "firmware-name",
+ 				      &firmware_name);
+@@ -693,17 +819,22 @@
+ 		return ret;
+ 	}
+ 
++	is_text_pd = of_device_is_compatible(userpd_np,
++					     "qcom,ipq5332-mpd-upd-text");
++	if (is_text_pd)
++		ops = &text_pd_ops;
++
+ 	dev_info(wcss->dev, "%s node found\n", userpd_np->name);
+ 
+ 	userpd_pdev = of_platform_device_create(userpd_np, userpd_np->name,
+-						wcss->dev);
++						parent_dev);
+ 	if (!userpd_pdev)
+ 		return dev_err_probe(wcss->dev, -ENODEV,
+ 				     "failed to create %s platform device\n",
+ 				     userpd_np->name);
+ 
+ 	userpd_pdev->dev.driver = wcss->dev->driver;
+-	rproc = rproc_alloc(&userpd_pdev->dev, userpd_pdev->name, &wcss_ops,
++	rproc = rproc_alloc(&userpd_pdev->dev, userpd_pdev->name, ops,
+ 			    firmware_name, sizeof(*upd));
+ 	if (!rproc) {
+ 		ret = -ENOMEM;
+@@ -712,20 +843,56 @@
+ 
+ 	upd = rproc->priv;
+ 	upd->dev = &userpd_pdev->dev;
++	upd->rpd = wcss;
++	upd->parent_rproc = parent_rproc;
+ 
+-	ret = init_irq(&upd->q6, userpd_pdev, rproc,
+-		       WCSS_CRASH_REASON, NULL, NULL);
+-	if (ret)
+-		goto free_rproc;
++	if (is_text_pd) {
++		/* A text pd has no spawn/stop states and no interrupts, so
++		 * there is nothing for init_irq() to claim. Take the asid
++		 * from the node name and wire up the rproc back pointer
++		 * init_irq() would otherwise have set.
++		 */
++		upd->pd_asid = qcom_get_pd_asid_from_node(userpd_np);
++		upd->q6.rproc = rproc;
++		upd->q6.dev = &userpd_pdev->dev;
++	} else {
++		ret = init_irq(&upd->q6, userpd_pdev, rproc,
++			       WCSS_CRASH_REASON, NULL, NULL);
++		if (ret)
++			goto free_rproc;
++	}
+ 
+ 	rproc->auto_boot = false;
+ 	ret = rproc_add(rproc);
+ 	if (ret)
+ 		goto free_rproc;
+ 
+-	wcss->upd[upd->pd_asid] = upd;
++	if (is_text_pd) {
++		wcss->tpd = upd;
++	} else if (upd->pd_asid < ARRAY_SIZE(wcss->upd)) {
++		wcss->upd[upd->pd_asid] = upd;
++	} else {
++		dev_err(wcss->dev, "%s: pd asid %u out of range\n",
++			userpd_np->name, upd->pd_asid);
++		ret = -ERANGE;
++		goto free_rproc;
++	}
++
+ 	platform_set_drvdata(userpd_pdev, rproc);
+ 	qcom_add_ssr_subdev(rproc, &upd->ssr_subdev, userpd_pdev->name);
++
++	if (!is_text_pd)
++		return 0;
++
++	/* Register the user pds that sit below this text pd */
++	for_each_available_child_of_node(userpd_np, child_np) {
++		ret = q6_register_userpd(wcss, rproc, &userpd_pdev->dev,
++					 child_np);
++		if (ret) {
++			of_node_put(child_np);
++			return ret;
++		}
++	}
+ 	return 0;
+ 
+ free_rproc:
+@@ -801,7 +968,7 @@
+ 
+ 	/* Iterate over userpd child's and register with rproc */
+ 	for_each_available_child_of_node(pdev->dev.of_node, userpd_np) {
+-		ret = q6_register_userpd(wcss, userpd_np);
++		ret = q6_register_userpd(wcss, rproc, &pdev->dev, userpd_np);
+ 		if (ret) {
+ 			/* release resources of successfully allocated userpd rproc's */
+ 			q6_release_resources(wcss);
