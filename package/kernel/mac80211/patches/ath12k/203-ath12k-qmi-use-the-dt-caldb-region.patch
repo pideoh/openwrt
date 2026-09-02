@@ -1,0 +1,69 @@
+ath12k: qmi: give the firmware the caldb region the DT describes
+
+ath12k answers a CALDB_MEM_REGION_TYPE memory request with paddr = 0,
+on the grounds that it does not drive cold boot calibration itself.
+
+Vendor firmware does it anyway. With a null address it has nowhere to
+put the result -- RAM starts at 0x40000000 on IPQ5332 -- and the Q6
+reports a fatal error a few hundred milliseconds after the QMI
+handshake:
+
+  ath12k_ahb c000000.wifi: chip_id 0x0 chip_family 0xb board_id 0xff
+  qcom-q6-mpd d100000.remoteproc: fatal error without message
+  remoteproc remoteproc0: crash detected in d100000.remoteproc
+
+The device tree already describes the region: ipq5332.dtsi gives the
+wifi node memory-region = <&q6_ipq5332_data>, <&m3_dump>, <&q6_caldb>,
+<&mlo_global_mem>, and index 2 is exactly what is wanted here. The M3
+dump case a few lines below already takes index 1 the same way.
+
+Boards without a caldb region keep the old behaviour rather than
+failing to probe.
+
+This is a local patch: upstream would need to decide whether ath12k
+should describe this memory when it does not use the results itself.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -2752,13 +2752,33 @@
+ 			idx++;
+ 			break;
+ 		case CALDB_MEM_REGION_TYPE:
+-			/* Cold boot calibration is not enabled in Ath12k. Hence,
+-			 * assign paddr = 0.
+-			 * Once cold boot calibration is enabled add support to
+-			 * assign reserved memory from DT.
++			/* Hand the firmware the caldb region the device tree
++			 * already describes, rather than a null address.
++			 *
++			 * Upstream passes 0 here because ath12k does not drive
++			 * cold boot calibration itself. Vendor firmware does it
++			 * anyway, and with paddr = 0 it has nowhere to put the
++			 * result -- RAM starts at 0x40000000 on this SoC -- so
++			 * the Q6 reports a fatal error shortly after the QMI
++			 * handshake and takes the radio down with it.
++			 *
++			 * If the board has no caldb region, fall back to the
++			 * old behaviour rather than failing the probe.
+ 			 */
+-			ab->qmi.target_mem[idx].paddr = 0;
+-			ab->qmi.target_mem[idx].v.ioaddr = NULL;
++			rmem = ath12k_core_get_reserved_mem(ab, 2);
++			if (rmem && rmem->size >= ab->qmi.target_mem[i].size) {
++				ab->qmi.target_mem[idx].paddr = rmem->base;
++				ab->qmi.target_mem[idx].v.ioaddr =
++					ioremap(ab->qmi.target_mem[idx].paddr,
++						ab->qmi.target_mem[i].size);
++				if (!ab->qmi.target_mem[idx].v.ioaddr) {
++					ret = -EIO;
++					goto out;
++				}
++			} else {
++				ab->qmi.target_mem[idx].paddr = 0;
++				ab->qmi.target_mem[idx].v.ioaddr = NULL;
++			}
+ 			ab->qmi.target_mem[idx].size = ab->qmi.target_mem[i].size;
+ 			ab->qmi.target_mem[idx].type = ab->qmi.target_mem[i].type;
+ 			idx++;
