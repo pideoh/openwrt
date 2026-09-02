@@ -153,6 +153,31 @@
  * partition) is left as future work -- see the "0:art" partition on
  * &qpic_nand below, which almost certainly holds it on this board.
  */
+/*
+ * The vendor device tree reserves 512 KiB immediately after mlo_global_mem
+ * that the upstream ipq5332.dtsi does not describe. Leaving it out lets
+ * Linux hand those pages to userspace, and something on the WLAN firmware
+ * path then writes over them: a few hundred milliseconds after the QMI
+ * handshake completes, procd takes an undefined instruction and init dies.
+ *
+ *   ath12k_ahb c000000.wifi: qmi failed to load calibrated data :-12
+ *   Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000004
+ *   CPU: 0 PID: 1 Comm: procd ... el0_undef+0x50/0x64
+ *
+ * It only bites once the radio actually initialises, which is why it did
+ * not show up until board data started being accepted, and it does not
+ * reproduce on every boot -- it depends on what happens to be allocated
+ * there.
+ */
+/ {
+	reserved-memory {
+		rsvd1@4e700000 {
+			reg = <0x0 0x4e700000 0x0 0x80000>;
+			no-map;
+		};
+	};
+};
+
 &q6v5_wcss {
 	/*
 	 * Restructure the PD hierarchy to match what the vendor firmware
