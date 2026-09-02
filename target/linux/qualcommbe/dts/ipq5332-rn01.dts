@@ -40,12 +40,7 @@
 		 * for root device /dev/ubiblock0_1..." since nothing ever
 		 * creates that node.
 		 */
-		/*
-		 * DIAG: page_poison=1 catches a device writing into free RAM.
-		 * It has to go here, not in bootargs -- u-boot supplies the
-		 * command line and the kernel only appends this property.
-		 */
-		bootargs-append = " ubi.mtd=rootfs ubi.block=0,ubi_rootfs root=/dev/ubiblock0_1 rootfstype=squashfs rootwait page_poison=1";
+		bootargs-append = " ubi.mtd=rootfs ubi.block=0,ubi_rootfs root=/dev/ubiblock0_1 rootfstype=squashfs rootwait";
 		stdout-path = "serial0:115200n8";
 	};
 

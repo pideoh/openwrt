@@ -64,12 +64,3 @@ Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
  		case M3_DUMP_REGION_TYPE:
  			rmem = ath12k_core_get_reserved_mem(ab, 1);
  			if (!rmem) {
-@@ -3686,6 +3723,8 @@
- 		ab->qmi.target_mem[i].size = msg->mem_seg[i].size;
- 		ath12k_dbg(ab, ATH12K_DBG_QMI, "qmi mem seg type %d size %d\n",
- 			   msg->mem_seg[i].type, msg->mem_seg[i].size);
-+		ath12k_warn(ab, "DBG: fw requests mem type %u size %u\n",
-+			    msg->mem_seg[i].type, msg->mem_seg[i].size);
- 	}
- 
- 	if (test_bit(ATH12K_FLAG_FIXED_MEM_REGION, &ab->dev_flags)) {
