@@ -1,47 +1,39 @@
-ath12k: qmi: answer the firmware's memory negotiation properly
+ath12k: qmi: do not drop memory regions the device tree describes
 
-Three things about how the fixed-memory path answers the firmware's
-QMI memory request, found by comparing against the vendor device tree
-on an IPQ5332 board.
+The fixed-memory path handles four region types and lets the rest fall
+through to default:, which logs and breaks without incrementing idx.
+mem_seg_count is then taken from idx, so an unhandled region is dropped
+from the reply entirely: the firmware asks for it, is told nothing, and
+is left to place it wherever its own defaults say.
 
-The firmware is told which memory profile to run. The vendor gives its
-wifi node a target memory mode of 2; ath12k's own enum stops at 1,
-because ath12k_mem_profile_based_param[] has only two entries, and the
-AHB path leaves the default. The profile sent over QMI is set here
-instead of through ab->target_mem_mode, which has to remain a valid
-index into that array.
+MLO_GLOBAL_MEM is one of the unhandled types, and ipq5332.dtsi hands
+the wifi node mlo_global_mem as memory-region[3] that nothing reads.
+The firmware on this board does not request it -- instrumented and
+confirmed, it asks only for 256 KiB of BDF and 1 MiB of M3 dump -- so
+this changes nothing here. Silently dropping a region the device tree
+describes is still wrong.
 
-MLO_GLOBAL_MEM_REGION_TYPE was not handled at all. ipq5332.dtsi hands
-the wifi node mlo_global_mem as memory-region[3], but the switch has no
-case for it, so it fell through to default, was logged as an invalid
-type and -- because idx is not incremented and mem_seg_count is then
-set from idx -- dropped from the reply entirely. The firmware asks for
-a region, is told nothing about it, and falls back to its own default
-address. On this board every such default is past the last reservation,
-in memory Linux is using, which is consistent with what we see: PID 1
-taking an undefined instruction a few hundred milliseconds after the
-handshake, on some boots and not others.
-
-The requested chunks are also logged unconditionally for now. That
-should come out once this is understood; it is here because the
-negotiation is the ground truth everything else depends on and it was
-previously only visible under a debug mask.
+The requested chunks are also logged unconditionally while the WLAN
+bring-up is being worked out; that should come out afterwards.
 
 Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
 ---
 --- a/drivers/net/wireless/ath/ath12k/qmi.c
 +++ b/drivers/net/wireless/ath/ath12k/qmi.c
-@@ -2763,6 +2763,40 @@
+@@ -2783,6 +2783,43 @@
  			ab->qmi.target_mem[idx].type = ab->qmi.target_mem[i].type;
  			idx++;
  			break;
 +		case MLO_GLOBAL_MEM_REGION_TYPE:
 +			/* ipq5332.dtsi hands wifi0 mlo_global_mem as
-+			 * memory-region[3], but the fixed-memory path never
-+			 * looked at it: the chunk fell through to default, was
-+			 * dropped from the reply, and the firmware was left to
-+			 * place it wherever its own defaults say -- which on this
-+			 * board is past the last reservation, in kernel RAM.
++			 * memory-region[3], but the fixed-memory path had no case
++			 * for it: the chunk fell through to default, and because
++			 * idx is not incremented and mem_seg_count is taken from
++			 * idx, it was dropped from the reply entirely.
++			 *
++			 * The firmware on this board does not ask for it, so this
++			 * changes nothing here; it is wrong to silently drop a
++			 * region the device tree describes.
 +			 */
 +			rmem = ath12k_core_get_reserved_mem(ab, 3);
 +			if (!rmem) {
@@ -72,7 +64,7 @@ Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
  		case M3_DUMP_REGION_TYPE:
  			rmem = ath12k_core_get_reserved_mem(ab, 1);
  			if (!rmem) {
-@@ -3659,6 +3693,8 @@
+@@ -3686,6 +3723,8 @@
  		ab->qmi.target_mem[i].size = msg->mem_seg[i].size;
  		ath12k_dbg(ab, ATH12K_DBG_QMI, "qmi mem seg type %d size %d\n",
  			   msg->mem_seg[i].type, msg->mem_seg[i].size);
@@ -81,20 +73,3 @@ Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
  	}
  
  	if (test_bit(ATH12K_FLAG_FIXED_MEM_REGION, &ab->dev_flags)) {
-@@ -3868,6 +3904,16 @@
- 	ab->qmi.ab = ab;
- 
- 	ab->qmi.target_mem_mode = ab->target_mem_mode;
-+
-+	/* Boards with a fixed memory region are the on-chip radios, and the
-+	 * vendor device tree gives them a target memory mode of 2. ath12k's
-+	 * own enum stops at 1 because ath12k_mem_profile_based_param[] has
-+	 * only two entries, so the profile the firmware is told to use is set
-+	 * here rather than through ab->target_mem_mode, which has to stay a
-+	 * valid index into that array.
-+	 */
-+	if (test_bit(ATH12K_FLAG_FIXED_MEM_REGION, &ab->dev_flags))
-+		ab->qmi.target_mem_mode = 2;
- 	ret = qmi_handle_init(&ab->qmi.handle, ATH12K_QMI_RESP_LEN_MAX,
- 			      &ath12k_qmi_ops, ath12k_qmi_msg_handlers);
- 	if (ret < 0) {

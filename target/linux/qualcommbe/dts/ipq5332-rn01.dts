@@ -190,21 +190,6 @@
 		 * is deliberate -- the vendor has no separate caldb node for
 		 * the same reason.
 		 */
-		/*
-		 * Keep the top of RAM away from Linux, the way the vendor
-		 * does. Its kernel reports 458240K of 524288K physical with
-		 * only 16208K accounted for by carve-outs, so roughly 64 MiB
-		 * at the top is simply not memory it allocates from.
-		 *
-		 * Measured here: the firmware writes into whatever is left
-		 * free above the reservations. Fencing off 0x4e800000 upwards
-		 * to the end of RAM stops the panic; stopping at 0x52000000
-		 * or 0x5a000000 does not, so the writes reach the top.
-		 */
-		fw_scratch@5c000000 {
-			reg = <0x0 0x5c000000 0x0 0x4000000>;
-			no-map;
-		};
 
 		rn01_caldb: caldb@4d000000 {
 			reg = <0x0 0x4d000000 0x0 0x500000>;
