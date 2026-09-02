@@ -154,10 +154,64 @@
  * &qpic_nand below, which almost certainly holds it on this board.
  */
 &q6v5_wcss {
+	/*
+	 * Restructure the PD hierarchy to match what the vendor firmware
+	 * expects: root PD -> text PD -> user PDs. The upstream dtsi models
+	 * only two levels, which leaves the Q6 faulting a few milliseconds
+	 * after it signals ready. See WIFI.md and
+	 * boot-logs/vendor-q6-bringup-reference.log.
+	 *
+	 * The user PDs are renamed pd-1/pd-2 -> pd1/pd2 so that the asid
+	 * parsed from the node name agrees with the one derived from the
+	 * spawn bit (10 / 8 == 1, 18 / 8 == 2). Labels are unchanged, so
+	 * the wifi nodes point at the text PD instead (see &wifi0).
+	 */
 	status = "okay";
+
+	/delete-node/ pd-1;
+	/delete-node/ pd-2;
+
+	/*
+	 * Text PD.  Owns the WLAN text segment shared by both
+	 * user PDs; the vendor firmware requires this level to
+	 * exist between the root PD and the user PDs.  It has
+	 * no memory-region (it uses the root PD's), no smem
+	 * states and no interrupts, exactly like the vendor's
+	 * remoteproc_text_pd3 node.
+	 *
+	 * The node name must end in "pd3": the driver derives
+	 * the PD asid (3, i.e. PAS id 0x312) from it, because
+	 * there is no spawn bit to derive it from.
+	 */
+	q6_wcss_text_pd3: text-pd3 {
+		compatible = "qcom,ipq5332-mpd-upd-text";
+		firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw3.mdt";
+
+
+	};
 };
 
 &wifi0 {
+	/*
+	 * Point at the text PD rather than a user PD: rproc_boot() walks up
+	 * the parent chain, so booting the text PD brings the root PD up too,
+	 * which is the order the vendor firmware needs. ath12k_ahb loads the
+	 * user PD firmware (q6_fw<userpd_id>.mdt) and drives the spawn
+	 * handshake itself, so the mpd driver must not also claim those smp2p
+	 * interrupts -- hence no pd1/pd2 rproc children.
+	 */
+	qcom,rproc = <&q6_wcss_text_pd3>;
+
+	/*
+	 * ath12k_ahb loads the user PD image itself with qcom_mdt_load()
+	 * into memory-region[0]. The vendor's q6_fw1.mdt carries segment
+	 * addresses relative to the whole Q6 region, not to the smaller
+	 * per-PD data window the upstream dtsi points here, which fails as
+	 * "segment outside memory range". Give it the full root region.
+	 */
+	memory-region = <&q6_region>, <&m3_dump>, <&q6_caldb>,
+			<&mlo_global_mem>;
+
 	qcom,calibration-variant = "RN01";
 	status = "okay";
 };
@@ -177,6 +231,7 @@
  * Enable this once ath12k actually supports the chip.
  */
 &wifi1 {
+	qcom,rproc = <&q6_wcss_text_pd3>;
 	qcom,calibration-variant = "RN01";
 	status = "disabled";
 };
