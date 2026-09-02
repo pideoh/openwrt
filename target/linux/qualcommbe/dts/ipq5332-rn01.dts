@@ -177,24 +177,24 @@
 		};
 
 		/*
-		 * Calibration database. The vendor device tree puts it at
-		 * 0x4d000000 and sizes it 5 MiB:
+		 * No calibration database region.
 		 *
+		 * The vendor's qcom,caldb-addr is a six element array indexed
+		 * by qcom,tgt-mem-mode, and this board runs mode 2:
+		 *
+		 *   qcom,tgt-mem-mode = <0x02>;
 		 *   qcom,caldb-addr = <0x4d000000 0x4d000000 0 0 0 0>;
-		 *   qcom,caldb-size = <0x500000>;
+		 *                       mode 0     mode 1     mode 2
 		 *
-		 * while the upstream dtsi's q6_caldb is 2 MiB at 0x4cb00000.
-		 * Handing the firmware a region smaller than it writes leaves
-		 * the tail landing wherever it falls, and 0x4cd00000-0x4ce00000
-		 * is not reserved at all. This overlaps q6_qcn6432_data, which
-		 * is deliberate -- the vendor has no separate caldb node for
-		 * the same reason.
+		 * so the vendor hands the firmware address 0 here, exactly as
+		 * upstream ath12k does. Its QCN6432 node says the same thing.
+		 * 0x4d000000 is the mode 0 address, and a region there sits
+		 * inside q6_qcn6432_data -- the kernel says so on every boot:
+		 *
+		 *   OF: reserved mem: OVERLAP DETECTED!
+		 *   q6-qcn6432-data@4ce00000 (0x4ce00000--0x4dc00000) overlaps
+		 *     with caldb@4d000000 (0x4d000000--0x4d500000)
 		 */
-
-		rn01_caldb: caldb@4d000000 {
-			reg = <0x0 0x4d000000 0x0 0x500000>;
-			no-map;
-		};
 	};
 };
 
@@ -331,12 +331,13 @@
 	board_id = <19>;
 
 	/*
-	 * memory-region[2] is what patch 203 hands the firmware for its
-	 * calibration database, so point it at the region the vendor sizes
-	 * rather than the upstream 2 MiB q6_caldb.
+	 * memory-region is deliberately not overridden: the upstream dtsi
+	 * already points it at q6_ipq5332_data / m3_dump / q6_caldb /
+	 * mlo_global_mem, which matches the vendor's own pd1 node. The
+	 * firmware asks for 3 MiB of caldb and q6_caldb is 2 MiB, so
+	 * patch 203 falls back to address 0 -- which is what the vendor
+	 * passes in this memory mode anyway.
 	 */
-	memory-region = <&q6_ipq5332_data>, <&m3_dump>, <&rn01_caldb>,
-			<&mlo_global_mem>;
 
 	qcom,calibration-variant = "RN01";
 	status = "okay";

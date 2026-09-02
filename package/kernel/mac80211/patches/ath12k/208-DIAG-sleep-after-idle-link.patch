@@ -1,0 +1,48 @@
+DIAG: ath12k: sleep after the idle-link ring goes live
+
+Temporary, not for upstream.
+
+procd dies of el0_undef about 45 ms after HAL_WBM_IDLE_LINK is handed
+to ath12k_hal_srng_setup(), and the number of rings that get set up
+first tracks console throughput rather than any particular ring -- so
+the trigger may not be the code that runs next at all.
+
+Sleep three seconds right after the idle-link ring is programmed. If
+the panic lands inside the sleep, nothing the host runs afterwards can
+be responsible and the corruption is asynchronous. Print the link
+descriptor bank addresses too, since those are what the ring is about
+to be filled with.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/dp.c
++++ b/drivers/net/wireless/ath/ath12k/dp.c
+@@ -336,6 +336,11 @@
+ 	ath12k_warn(ab, "DBG: srng HAL_BEGIN type=%d ring=%d\n", type, ring_num);
+ 	ret = ath12k_hal_srng_setup(ab, type, ring_num, mac_id, &params);
+ 	ath12k_warn(ab, "DBG: srng HAL_DONE type=%d ring=%d ret=%d\n", type, ring_num, ret);
++	if (type == HAL_WBM_IDLE_LINK) {
++		ath12k_warn(ab, "DBG: idle-link live, sleeping 3s\n");
++		msleep(3000);
++		ath12k_warn(ab, "DBG: survived the 3s sleep\n");
++	}
+ 	if (ret < 0) {
+ 		ath12k_warn(ab, "failed to setup srng: %d ring_id %d\n",
+ 			    ret, ring_num);
+@@ -836,10 +841,16 @@
+ 	if (n_link_desc_bank > DP_LINK_DESC_BANKS_MAX)
+ 		return -EINVAL;
+ 
++	ath12k_warn(ab, "DBG: banks n=%u last_sz=%u tot=%u\n",
++		    n_link_desc_bank, last_bank_sz, tot_mem_sz);
+ 	ret = ath12k_dp_link_desc_bank_alloc(ab, link_desc_banks,
+ 					     n_link_desc_bank, last_bank_sz);
++	ath12k_warn(ab, "DBG: banks alloc ret=%d\n", ret);
+ 	if (ret)
+ 		return ret;
++	for (i = 0; i < n_link_desc_bank; i++)
++		ath12k_warn(ab, "DBG: bank[%d] paddr=%pad size=%u\n", i,
++			    &link_desc_banks[i].paddr, link_desc_banks[i].size);
+ 
+ 	/* Setup link desc idle list for HW internal usage */
+ 	entry_sz = ath12k_hal_srng_get_entrysize(ab, ring_type);
