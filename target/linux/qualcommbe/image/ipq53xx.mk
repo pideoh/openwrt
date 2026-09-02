@@ -98,7 +98,12 @@ define Device/xiaomi_rn01
 	# the shared linux-firmware source tree. Left out of DEVICE_PACKAGES for
 	# now so Phase 1 (no-WiFi bring-up) can build; WiFi packaging is Phase 2
 	# work anyway.
-	DEVICE_PACKAGES := kmod-ath12k kmod-leds-pwm
+	# kmod-qrtr-smd binds the "IPCRTR" glink channel the Q6 exposes. Without
+	# it the channel is created but nothing drives it, so ath12k's QMI
+	# handshake never starts: the PDs come up, ath12k logs its hardware name
+	# and then stalls with no wiphy ever registered. qrtr-mhi (pulled in by
+	# kmod-ath12k for PCIe radios) does not cover the on-chip glink path.
+	DEVICE_PACKAGES := kmod-ath12k kmod-leds-pwm kmod-qrtr-smd
 	# The vendor DT shows two active radios: wifi@c0000000
 	# (qcom,cnss-qca5332 / qcom,ipq5332-wifi, on-chip AHB) and wifi4@f00000
 	# (qcom,cnss-qcn6432, multipd userpd1). Per ATH12K_HW_IPQ5332_HW10
