@@ -45,7 +45,7 @@
 		 * It has to go here, not in bootargs -- u-boot supplies the
 		 * command line and the kernel only appends this property.
 		 */
-		bootargs-append = " ubi.mtd=rootfs ubi.block=0,ubi_rootfs root=/dev/ubiblock0_1 rootfstype=squashfs rootwait page_poison=1";
+		bootargs-append = " ubi.mtd=rootfs ubi.block=0,ubi_rootfs root=/dev/ubiblock0_1 rootfstype=squashfs rootwait page_poison=1 ath12k.debug_mask=0x232";
 		stdout-path = "serial0:115200n8";
 	};
 
@@ -366,6 +366,15 @@
 	 * patch 203 falls back to address 0 -- which is what the vendor
 	 * passes in this memory mode anyway.
 	 */
+
+	/*
+	 * The firmware's memory mode, which is not the same number as
+	 * ath12k's host-side profile index. The vendor sets 2 here and
+	 * indexes its qcom,bdf-addr / qcom,caldb-addr arrays by it; ath12k
+	 * defines only 0 and 1, and would otherwise report whichever of
+	 * those it picked from the amount of RAM Linux has.
+	 */
+	qcom,tgt-mem-mode = <2>;
 
 	qcom,calibration-variant = "RN01";
 	status = "okay";

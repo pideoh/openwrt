@@ -1,0 +1,36 @@
+DIAG: ath12k: print the memory chunks handed to the firmware
+
+Temporary, not for upstream.
+
+The Q6's own crash record says it took a NULL dereference:
+
+  :Excep :0 Exception detected  PName:wlan0  TName:WLAN BE
+  SP : 0x4ca52a00  FP : 0x4ca52a28  PC : 0xb01c2a48
+  SSR : 0x01970170  BADVA : 0x00000000  LR : 0xb01c2a10
+
+BADVA 0 means it dereferenced a pointer that was zero, and the pointers
+the host supplies are the memory chunks negotiated over QMI. The loop
+that sends them already logs each one, but at ATH12K_DBG_QMI, which is
+off. Raise it so the addresses are visible.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -2396,11 +2396,11 @@
+ 			req->mem_seg[i].addr = ab->qmi.target_mem[i].paddr;
+ 			req->mem_seg[i].size = ab->qmi.target_mem[i].size;
+ 			req->mem_seg[i].type = ab->qmi.target_mem[i].type;
+-			ath12k_dbg(ab, ATH12K_DBG_QMI,
+-				   "qmi req mem_seg[%d] %pad %u %u\n", i,
+-				   &ab->qmi.target_mem[i].paddr,
+-				   ab->qmi.target_mem[i].size,
+-				   ab->qmi.target_mem[i].type);
++			ath12k_warn(ab,
++				    "DBG: mem_seg[%d] paddr=%pad size=%u type=%u\n", i,
++				    &ab->qmi.target_mem[i].paddr,
++				    ab->qmi.target_mem[i].size,
++				    ab->qmi.target_mem[i].type);
+ 		}
+ 	}
+ 

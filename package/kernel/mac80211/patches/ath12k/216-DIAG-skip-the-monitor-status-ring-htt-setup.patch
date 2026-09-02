@@ -1,0 +1,51 @@
+DIAG: ath12k: skip the monitor status ring's HTT setup
+
+Temporary, not for upstream -- this disables the monitor status path.
+
+Bisecting ath12k_dp_rx_htt_setup with six second sleeps found the single
+message that takes the Q6 down. The refill buffer ring is survived in
+full; this one is followed by the fault 243 ms later, with the RX TLV
+filter not yet sent:
+
+  15.847  htt[0] rx_refill_buf
+  15.851  htt[3] mon_status_refill
+  15.856  sleeping 6s
+  16.099  fatal error
+  22.237  survived 6s
+  22.237  htt[4] rxdma_ring_sel_config
+
+So ath12k_dp_tx_htt_srng_setup(..., HAL_RXDMA_MONITOR_STATUS) is what the
+firmware cannot take. Skip it and see whether the rest comes up.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/dp_rx.c
+@@ -4651,18 +4651,15 @@
+ 			return ret;
+ 		}
+ 	} else {
+-		for (i = 0; i < ab->hw_params->num_rxdma_per_pdev; i++) {
+-			ring_id =
+-				dp->rx_mon_status_refill_ring[i].refill_buf_ring.ring_id;
+-			ret = ath12k_dp_tx_htt_srng_setup(ab, ring_id, i,
+-							  HAL_RXDMA_MONITOR_STATUS);
+-			if (ret) {
+-				ath12k_warn(ab,
+-					    "failed to configure mon_status_refill_ring%d %d\n",
+-					    i, ret);
+-				return ret;
+-			}
+-		}
++		/* DIAG: this is the message that kills the Q6.
++		 *
++		 * Bisecting ath12k_dp_rx_htt_setup with sleeps put the fault
++		 * 243 ms after this call and before the next one: the refill
++		 * buffer ring is survived for six seconds, this is not.
++		 *
++		 * Skip it to find out whether everything else comes up.
++		 */
++		pr_warn("ath12k DBG: SKIPPING mon_status_refill htt setup\n");
+ 	}
+ 
+ 	ret = ab->hw_params->hw_ops->rxdma_ring_sel_config(ab);

@@ -1,0 +1,77 @@
+DIAG: remoteproc: qcom: read the Q6 crash reason from SMEM host 1
+
+Temporary, not for upstream.
+
+The Q6 raises its fatal interrupt on every boot and qcom_q6v5 prints
+"fatal error without message", because qcom_smem_get() is called with
+QCOM_SMEM_HOST_ANY, which is -1 and therefore reads the global partition
+only (smem.c consults a private partition only for host < SMEM_HOST_COUNT).
+
+The reason is not there. It is in the WCSS private partition, host 1:
+
+  DIAG smem[host 1, id 421] len=4096 first=65 72 72 5f: err_smem_ver.2.1:
+
+qcom_q6v5_mpd.c even defines WCSS_SMEM_HOST as 1 for exactly this and then
+never uses it, because qcom_q6v5_init() has no way to pass a host through.
+
+Read the record from host 1 and print it, so the firmware's own account of
+what went wrong is visible.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/remoteproc/qcom_q6v5.c
++++ b/drivers/remoteproc/qcom_q6v5.c
+@@ -122,10 +122,50 @@
+ 		return IRQ_HANDLED;
+ 
+ 	msg = qcom_smem_get(QCOM_SMEM_HOST_ANY, q6v5->crash_reason, &len);
+-	if (!IS_ERR(msg) && len > 0 && msg[0])
++	if (!IS_ERR(msg) && len > 0 && msg[0]) {
+ 		dev_err(q6v5->dev, "fatal error received: %s\n", msg);
+-	else
+-		dev_err(q6v5->dev, "fatal error without message\n");
++	} else {
++		/* DIAG: the reason is in the WCSS private SMEM partition,
++		 * host 1, not the global one this driver asks for.
++		 * qcom_q6v5_mpd.c even defines WCSS_SMEM_HOST for it and
++		 * never uses it, because qcom_q6v5_init() has no way to pass
++		 * a host through. Read it from there and print the record.
++		 */
++		char line[81];
++		size_t l;
++		char *m;
++		int off, i;
++
++		dev_err(q6v5->dev, "fatal error without message (global id %d)\n",
++			q6v5->crash_reason);
++
++		m = qcom_smem_get(1, q6v5->crash_reason, &l);
++		if (IS_ERR(m)) {
++			dev_err(q6v5->dev, "DIAG no host-1 item %d either: %ld\n",
++				q6v5->crash_reason, PTR_ERR(m));
++			goto diag_done;
++		}
++
++		dev_err(q6v5->dev, "DIAG host-1 item %d, %zu bytes:\n",
++			q6v5->crash_reason, l);
++
++		for (off = 0; off < l && off < 2048; off += 80) {
++			int n = min_t(int, 80, (int)l - off);
++			int printable = 0;
++
++			for (i = 0; i < n; i++) {
++				u8 c = m[off + i];
++
++				line[i] = (c >= 0x20 && c < 0x7f) ? c : '.';
++				if (c >= 0x20 && c < 0x7f)
++					printable++;
++			}
++			line[n] = 0;
++			if (printable >= 4)
++				dev_err(q6v5->dev, "DIAG +%04x %s\n", off, line);
++		}
++	}
++diag_done:
+ 
+ 	q6v5->running = false;
+ 	rproc_report_crash(q6v5->rproc, RPROC_FATAL_ERROR);

@@ -1,0 +1,64 @@
+DIAG: remoteproc: take a coredump of the Q6 when it faults
+
+Temporary, not for upstream.
+
+The Q6 raises its fatal interrupt on every boot with no message, and SMEM
+item 421 turns out not to exist at all, so there is nothing to read. A
+coredump of its own memory is the way to find out what it thinks went
+wrong -- and the machinery is already wired up: dump_conf is
+RPROC_COREDUMP_ENABLED and a segment covers all 33 MiB of q6_region.
+
+It has never produced anything because rproc_coredump() bails on
+"ELF class is not set". rproc_alloc() leaves elf_class at ELFCLASSNONE,
+and the only code that assigns it is rproc_elf_sanity_check(), installed
+only for drivers that supply no .load op. qcom_q6v5_mpd supplies one, so
+it is never set. The firmware images say ELFCLASS32 / EM_QDSP6.
+
+Add SMEM to the dump as well, since a crash reason written to the WCSS
+private partition lands there and nowhere the driver looks.
+
+Do not move the dump ahead of rproc_stop(). Reading the Q6 window while
+the Q6 is still running takes a synchronous external abort:
+
+  Internal error: synchronous external abort: 0000000096000010 [#1] SMP
+  Workqueue: rproc_recovery_wq rproc_crash_handler_work
+
+so the shutdown has to happen first.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -11,6 +11,7 @@
+ #include <linux/io.h>
+ #include <linux/iopoll.h>
+ #include <linux/kernel.h>
++#include <linux/elf.h>
+ #include <linux/module.h>
+ #include <linux/of_address.h>
+ #include <linux/of_device.h>
+@@ -938,9 +939,24 @@
+ 
+ 	/* DBG: dump the whole Q6 region on crash so the firmware's own
+ 	 * error text can be recovered from it.
++	 *
++	 * rproc_coredump() refuses to run unless elf_class is set, and
++	 * nothing sets it here: rproc_alloc() leaves it ELFCLASSNONE and
++	 * only rproc_elf_sanity_check() ever assigns it, which is installed
++	 * only for drivers that supply no .load op. This driver has one, so
++	 * every crash so far has printed "ELF class is not set" and dumped
++	 * nothing. The firmware images are ELFCLASS32 / EM_QDSP6 -- their
++	 * headers start 7f 45 4c 46 01 with e_machine 0xa4.
+ 	 */
++	rproc->elf_class = ELFCLASS32;
++	rproc->elf_machine = 164;		/* EM_QDSP6 */
+ 	rproc_coredump_add_segment(rproc, wcss->mem_phys, wcss->mem_size);
+ 
++	/* SMEM too: a crash reason written to the WCSS private partition
++	 * lands here and nowhere the driver currently looks.
++	 */
++	rproc_coredump_add_segment(rproc, 0x4a800000, 0x100000);
++
+ 	wcss->num_clks = devm_clk_bulk_get_all(wcss->dev, &wcss->clks);
+ 	if (wcss->num_clks < 0)
+ 		return dev_err_probe(wcss->dev, wcss->num_clks,

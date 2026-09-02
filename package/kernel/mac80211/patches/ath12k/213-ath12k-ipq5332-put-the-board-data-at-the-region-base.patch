@@ -1,0 +1,45 @@
+ath12k: ipq5332: put the board data at the base of its region
+
+ath12k places the board data at reserved_mem[0].base plus
+hw_params->bdf_addr_offset, which is 0xC00000 for IPQ5332. On the Xiaomi
+BE3600 Pro that is 0x4c900000, in the last megabyte of q6_ipq5332_data.
+
+The vendor device tree puts it at 0x4bd00000 -- the base of that same
+region -- for every entry of its qcom,bdf-addr array, and the M3 image
+links at 0x4bd40000, exactly 256 KiB later. The two abut with nothing
+between them, which is what a 256 KiB board data region at the base
+produces.
+
+This firmware is already known to use its own address for the calibration
+database rather than the one QMI hands it, so the same is plausible for
+the board data.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/hw.c
++++ b/drivers/net/wireless/ath/ath12k/hw.c
+@@ -1649,7 +1649,23 @@
+ 
+ 		.ce_ie_addr = &ath12k_ce_ie_addr_ipq5332,
+ 		.ce_remap = &ath12k_ce_remap_ipq5332,
+-		.bdf_addr_offset = 0xC00000,
++
++		/* The board data goes at the base of the reserved region, not
++		 * 12 MiB into it.
++		 *
++		 * The vendor device tree for this SoC puts it at 0x4bd00000 for
++		 * every memory mode, which is q6_ipq5332_data's base, and its M3
++		 * image links at 0x4bd40000 -- exactly 256 KiB later, so the two
++		 * abut with nothing between them. An offset of 0xC00000 instead
++		 * lands the board data at 0x4c900000, in the last megabyte of the
++		 * window.
++		 *
++		 * This firmware is already known to use its own address for the
++		 * calibration database rather than the one QMI hands it, so it
++		 * plausibly does the same for the board data, in which case it
++		 * reads whatever happens to be at 0x4bd00000.
++		 */
++		.bdf_addr_offset = 0,
+ 
+ 		.dp_primary_link_only = true,
+ 	},
