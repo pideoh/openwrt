@@ -1,0 +1,50 @@
+ath12k: ipq5332: use the RXMON path for the monitor rings
+
+IPQ5332's hw_params set rxdma1_enable = false, which makes
+ath12k_dp_rx_htt_setup() register a monitor status ring:
+
+  [HAL_RXDMA_MONITOR_STATUS] .start_ring_id =
+          HAL_SRNG_RING_ID_WMAC1_SW2RXDMA1_STATBUF   /* 185 */
+
+That is the legacy RXDMA1 status path. Sending it takes the firmware down
+about 250 ms later: the Q6 raises its fatal interrupt and remoteproc
+recovers the root PD, after which no wiphy appears. Its own crash record,
+read out of SMEM host 1, says
+
+  :Excep :0 Exception detected  PName:wlan0  TName:WLAN BE
+
+with the PC inside the shared WLAN text -- WLAN BE being a datapath
+worker, not a control thread. The vendor's firmware message catalog
+carries "RXDMA1 panic interrupt on PDEV ID-%d" for this case.
+
+With rxdma1_enable = true the driver registers the newer rings instead,
+
+  [HAL_RXDMA_MONITOR_BUF] .start_ring_id = HAL_SRNG_SW2RXMON_BUF0  /* 168 */
+  [HAL_RXDMA_MONITOR_DST] .start_ring_id =
+          HAL_SRNG_RING_ID_WMAC1_SW2RXMON_BUF0                     /* 184 */
+
+and the firmware is content: four boots, no fatal error, no crash, and
+phy0 registers and scans. So this WiFi 7 part implements only the RXMON
+monitor architecture, as QCN9274 hw2.0 does -- until now the only entry in
+the table with the flag set.
+
+Bisected by sleeping six seconds at successive points in
+ath12k_core_qmi_firmware_ready() and watching whether the fault landed
+inside the sleep, down from the whole function to this one message.
+
+Tested on a Xiaomi BE3600 Pro (IPQ5332), firmware
+WLAN.WBE.1.3.2-00067-QCAHKSWPL_SILICONZ-1.128291.1.135427.1.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/hw.c
++++ b/drivers/net/wireless/ath/ath12k/hw.c
+@@ -1602,7 +1602,7 @@
+ 
+ 		.hal_params = &ath12k_hw_hal_params_ipq5332,
+ 
+-		.rxdma1_enable = false,
++		.rxdma1_enable = true,
+ 		.num_rxdma_per_pdev = 1,
+ 		.num_rxdma_dst_ring = 0,
+ 		.rx_mac_buf_ring = false,
