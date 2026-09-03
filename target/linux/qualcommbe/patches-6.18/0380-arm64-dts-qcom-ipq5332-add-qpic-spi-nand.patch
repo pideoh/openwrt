@@ -1,0 +1,82 @@
+From: Hideo Sumi <hideo.sumi@mugops.com>
+Date: Sat, 30 Aug 2026 00:00:00 +0200
+Subject: [PATCH] arm64: dts: qcom: ipq5332: add QPIC BAM and SPI NAND
+ controller nodes
+
+IPQ5332 embeds the same QPIC block as IPQ9574/IPQ5018, already
+described upstream for those SoCs as qpic_nand: spi@79b0000 (driven by
+spi-qpic-snand.c, both already present in this kernel version), but
+upstream's ipq5332.dtsi does not describe this controller yet. Add it
+here, mirroring ipq9574.dtsi's node exactly (register layout, clocks,
+QPIC BAM), with the ipq5332-specific compatible and qpic_bam interrupt
+number.
+
+This corrects an earlier, wrong attempt at the same board bring-up
+that assumed the board's QPIC block drives a raw parallel NAND chip
+("qcom,ipq5332-nand", handled by qcom_nandc.c) rather than a serial
+(SPI) NAND chip. That assumption was made from the vendor devicetree's
+"qcom,ipq5332-nand" compatible string alone; it did not hold up against
+the real hardware. A live vendor dmesg on the actual device reads:
+
+    nand: device found, Manufacturer ID: 0xef, Chip ID: 0xba
+    nand: Winbond W25N01GWZEIG SPI NAND 1G 1.8V
+    nand: 128 MiB, SLC, erase size: 128 KiB, page size: 2048, OOB size: 64
+
+and the vendor devicetree's own pinmux node for this controller is
+named "qspi_nand_pins" (qspi_clk/qspi_cs) -- genuine QSPI signals, not
+an 8-bit parallel NAND bus. The Winbond W25N01GW (ID 0xba/0x21) is a
+standard part already supported by the generic
+drivers/mtd/nand/spi/winbond.c. qcom,ipq5332-nand (without "-snand")
+was in fact never added to upstream's raw-NAND qcom,nandc.yaml
+compatible list for IPQ5332 -- the vendor's QSDK downstream kernel
+evidently reuses that compatible name for its own unified NAND driver
+that autodetects chip type at runtime, unrelated to upstream's
+raw/serial split.
+
+qpic_bam's interrupt number (66) is IPQ5332-specific and comes from
+the vendor devicetree's dma@7984000 node
+("interrupts = <0x00 0x42 0x04>"); IPQ9574 uses a different number
+(146) for the same BAM at the same register offset, so it cannot be
+copied across SoCs.
+
+Signed-off-by: Hideo Sumi <hideo.sumi@mugops.com>
+---
+ arch/arm64/boot/dts/qcom/ipq5332.dtsi | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+--- a/arch/arm64/boot/dts/qcom/ipq5332.dtsi
++++ b/arch/arm64/boot/dts/qcom/ipq5332.dtsi
+@@ -687,6 +687,33 @@
+ 			};
+ 		};
+
++		qpic_bam: dma-controller@7984000 {
++			compatible = "qcom,bam-v1.7.4", "qcom,bam-v1.7.0";
++			reg = <0x07984000 0x1c000>;
++			interrupts = <GIC_SPI 66 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&gcc GCC_QPIC_AHB_CLK>;
++			clock-names = "bam_clk";
++			#dma-cells = <1>;
++			qcom,ee = <0>;
++			status = "disabled";
++		};
++
++		qpic_nand: spi@79b0000 {
++			compatible = "qcom,ipq5332-snand", "qcom,ipq9574-snand";
++			reg = <0x079b0000 0x10000>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			clocks = <&gcc GCC_QPIC_CLK>,
++				 <&gcc GCC_QPIC_AHB_CLK>,
++				 <&gcc GCC_QPIC_IO_MACRO_CLK>;
++			clock-names = "core", "aon", "iom";
++			dmas = <&qpic_bam 0>,
++			       <&qpic_bam 1>,
++			       <&qpic_bam 2>;
++			dma-names = "tx", "rx", "cmd";
++			status = "disabled";
++		};
++
+ 		usb: usb@8af8800 {
+ 			compatible = "qcom,ipq5332-dwc3", "qcom,dwc3";
+ 			reg = <0x08af8800 0x400>;
