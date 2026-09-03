@@ -40,3 +40,47 @@ define Device/ubnt_u7-pro-xgs
 		check-size | append-metadata
 endef
 TARGET_DEVICES += ubnt_u7-pro-xgs
+
+define Build/be3600-pro-wrap-kernel-elf
+	python3 $(TOPDIR)/target/linux/qualcommbe/image/be3600-pro-wrap-kernel-elf.py \
+		$(TOPDIR)/target/linux/qualcommbe/image/be3600-pro-kernel-elf-header.bin \
+		$@ $@.new
+	mv $@.new $@
+endef
+
+define Device/xiaomi_be3600-pro
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	# The vendor bootloader's do_bootmiwifi requires the "kernel" UBI
+	# volume to start with a small ELF wrapper (see be3600-pro-wrap-kernel-elf.py
+	# for the full story) or it logs "It is not a elf image" and resets --
+	# confirmed live via UART. Append the wrapping step to the plain FIT
+	# pipeline Device/FitImage already set up.
+	KERNEL += | be3600-pro-wrap-kernel-elf
+	# The vendor bootloader's do_bootmiwifi looks up UBI volumes by name
+	# ("kernel", static; "ubi_rootfs", dynamic) -- confirmed via a live
+	# U-Boot dump of the vendor's own rootfs_1 volume table, which the
+	# hardcoded lookup can't find in the default "kernel" (dynamic) /
+	# "rootfs" (dynamic) layout scripts/ubinize-image.sh otherwise produces.
+	UBI_KERNEL_STATIC := 1
+	UBI_ROOTFS_VOLNAME := ubi_rootfs
+	DEVICE_VENDOR := Xiaomi
+	DEVICE_MODEL := BE3600 Pro
+	SOC := ipq5332
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	# Winbond W25N01GWZEIG SPI NAND (128 MiB, SLC, erase 128 KiB, page 2048,
+	# OOB 64), confirmed against a live vendor dmesg on real hardware.
+	# rootfs/rootfs_1 in the vendor DT are 42 MiB each; keep the "kernel"
+	# UBI volume (KERNEL_SIZE) inside that.
+	KERNEL_SIZE := 8192k
+	IMAGE_SIZE := 43008k
+	NAND_SIZE := 128m
+	SUPPORTED_DEVICES += xiaomi,be3600-pro
+	DEVICE_PACKAGES := kmod-leds-pwm
+ifneq ($(CONFIG_TARGET_ROOTFS_INITRAMFS),)
+	ARTIFACTS := initramfs-factory.ubi
+	ARTIFACT/initramfs-factory.ubi := append-image-stage initramfs-uImage.itb | ubinize-kernel
+endif
+endef
+TARGET_DEVICES += xiaomi_be3600-pro

@@ -1,0 +1,553 @@
+// SPDX-License-Identifier: (GPL-2.0-or-later OR MIT)
+/dts-v1/;
+
+#include <arm64/qcom/ipq5332.dtsi>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+
+/ {
+	model = "Xiaomi BE3600 Pro";
+	compatible = "xiaomi,be3600-pro", "qcom,ipq5332";
+
+	aliases {
+		serial0 = &blsp1_uart0;
+	};
+
+	chosen {
+		bootargs = "console=ttyMSM0,115200n8";
+		/*
+		 * Xiaomi's u-boot sets "ubi.mtd=rootfs_1 root=mtd:ubi_rootfs
+		 * rootfstype=squashfs cnss2.enable_mlo_support=1 rootwait" --
+		 * "rootfs_1" is the vendor's B slot (override to OpenWrt's own
+		 * "rootfs" volume), and "root=mtd:ubi_rootfs" is the vendor
+		 * QSDK kernel's own non-mainline root= convention (confirmed
+		 * live: mainline's do_mounts.c has no "mtd:" root device
+		 * resolver at all -- boots with "Can't lookup blockdev" and
+		 * panics). Mainline's own convention for a UBI-block-backed
+		 * squashfs root, matching every other OpenWrt ipq5018/ipq50xx
+		 * Xiaomi board (e.g. xiaomi_ax6000), is "root=/dev/ubiblockN_M"
+		 * where M is the volume's index within the UBI device --
+		 * "ubi_rootfs" is volume index 1 here (0 is "kernel"). The
+		 * ubiblockN_M device node only gets created if explicitly
+		 * requested via "ubi.block=N,M" (or the volume name) --
+		 * confirmed live: without it, boot hangs forever on "Waiting
+		 * for root device /dev/ubiblock0_1..." since nothing ever
+		 * creates that node.
+		 */
+		bootargs-append = " ubi.mtd=rootfs ubi.block=0,ubi_rootfs root=/dev/ubiblock0_1 rootfstype=squashfs rootwait";
+		stdout-path = "serial0:115200n8";
+	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		pinctrl-0 = <&button_pins>;
+		pinctrl-names = "default";
+
+		button-reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&tlmm 43 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+	};
+
+	/*
+	 * Vendor DT models the status indicator as a single custom "pwm-rgb"
+	 * node (soc/pwm-rgb) with two channels, group1/orange and
+	 * group1/blue -- a bi-color LED, not a true 3-channel RGB LED and not
+	 * a single white LED. Both channels are exposed here as standard
+	 * "pwm-leds" children, reusing the PWM pin assignment (pwm0/pwm1 on
+	 * gpio30/gpio31) already confirmed against the vendor's pwm_pinmux.
+	 */
+	pwmleds {
+		compatible = "pwm-leds";
+
+		led_status_orange: led-0 {
+			function = LED_FUNCTION_STATUS;
+			color = <LED_COLOR_ID_ORANGE>;
+			pwms = <&pwm 0 1000000 0>;
+			max-brightness = <255>;
+		};
+
+		led_status_blue: led-1 {
+			function = LED_FUNCTION_STATUS;
+			color = <LED_COLOR_ID_BLUE>;
+			pwms = <&pwm 1 1000000 0>;
+			max-brightness = <255>;
+		};
+	};
+
+	/*
+	 * Separate from the pwm-rgb status LED above: the vendor DT's main
+	 * wifi radio node (soc/wifi@c0000000, compatible "qcom,ipq5332-wifi")
+	 * carries its own "led-gpio" property for a WLAN activity indicator,
+	 * driven directly off a TLMM GPIO rather than through the PWM block.
+	 *
+	 * Derived from the vendor DT: led-gpio = <0x0a 0x24 0x00>, where
+	 * phandle 0x0a resolves to soc/pinctrl@1000000 (the tlmm gpio
+	 * controller, "phandle = <0x0a>"), pin 0x24 = GPIO 36, flags 0x00 =
+	 * active-high. Confirmed via /sys/firmware/devicetree/base on the
+	 * live device (wifi@c0000000/led-gpio, independent of pwm-rgb).
+	 */
+	gpio-leds {
+		compatible = "gpio-leds";
+
+		led_wlan: led-2 {
+			function = LED_FUNCTION_WLAN;
+			gpios = <&tlmm 36 GPIO_ACTIVE_HIGH>;
+		};
+	};
+};
+
+/*
+ * ipq5332.dtsi deliberately leaves xo_board's "clock-frequency" unset
+ * (unlike cmn_pll_nss_*_clk, which hardcode a value) -- every real board
+ * dts is expected to supply it. Missing this meant gcc_uniphy_sys_clk_src
+ * (whose only parent is xo_board) could never compute a non-zero rate no
+ * matter what assigned-clocks/clk_set_rate() did: recalc_rate() multiplies
+ * by the parent rate, so parent=0 forces the result to 0 regardless of a
+ * "successful" divider write -- confirmed live: clk_set_rate() returned 0
+ * (success) but clk_get_rate() immediately after still read back 0.
+ * Confirmed missing on this board by comparing against Qualcomm's own
+ * reference boards (ipq5332-rdp-common.dtsi) and the other real in-tree
+ * ipq5332 board (ipq5332-u7-pro-xgs.dts), both of which set this to 24MHz.
+ */
+&xo_board {
+	clock-frequency = <24000000>;
+};
+
+/*
+ * Same omission as xo_board above, and the same consequence: ipq5332.dtsi
+ * declares sleep_clk as a "fixed-clock" with no "clock-frequency", and
+ * _of_fixed_clk_setup() refuses to register such a clock at all, so every
+ * descendant is left an orphan with rate 0. The PPE node itself consumes
+ * one (gcc GCC_IM_SLEEP_CLK, clock-name "gcc_im_sleep"), and vendor's own
+ * switch node lists gcc_im_sleep_clk too. Vendor's DT sets 32 kHz
+ * (clock-frequency = <0x7d00>), as does ipq5332-u7-pro-xgs.dts.
+ */
+&sleep_clk {
+	clock-frequency = <32000>;
+};
+
+&blsp1_uart0 {
+	pinctrl-0 = <&serial_0_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/*
+ * The BE3600 Pro's boot storage is a Winbond W25N01GWZEIG SPI NAND chip (128 MiB,
+ * SLC, 1.8V), confirmed directly from a live vendor dmesg: "Manufacturer
+ * ID: 0xef, Chip ID: 0xba" / "Winbond W25N01GWZEIG SPI NAND 1G 1.8V", and
+ * corroborated by the vendor DT's own pinmux node for this controller
+ * being named "qspi_nand_pins" (qspi_clk/qspi_cs) -- i.e. genuine QSPI
+ * signals, not an 8-bit parallel NAND bus.
+ *
+ * This directly contradicts an earlier assumption made from the vendor
+ * DT's "qcom,ipq5332-nand" compatible string alone (without the "-snand"
+ * suffix mainline uses for the serial flavour), which led to wrongly
+ * treating this as raw parallel NAND and adding a standalone
+ * qpic_nand_raw/nand@79b0000 node + qcom_nandc.c raw-NAND driver compat
+ * entry (former kernel patches 0380/0382, now removed). In fact:
+ *  - Mainline ipq5332.dtsi already describes this exact controller as
+ *    qpic_nand: spi@79b0000, compatible "qcom,ipq5332-snand" -- disabled
+ *    by default, needing only status="okay" and a child flash node, no
+ *    new devicetree node or driver patch required.
+ *  - The Winbond W25N01GW (ID 0xba/0x21) is natively supported by
+ *    mainline's generic drivers/mtd/nand/spi/winbond.c.
+ *  - qcom,ipq5332-nand (without "-snand") was in fact never added to
+ *    mainline's raw-NAND qcom,nandc.yaml compatible list for IPQ5332 at
+ *    all -- the vendor's QSDK downstream kernel evidently reuses that
+ *    compatible name for its own unified NAND driver that autodetects
+ *    chip type at runtime, unrelated to mainline's raw/serial split.
+ *
+ * qpic_bam (the QPIC block's own dedicated BAM at 0x07984000, separate
+ * from the shared BLSP1 BAM used by the on-chip UART/SPI/I2C peripherals)
+ * already exists in mainline ipq5332.dtsi too, disabled by default.
+ */
+&qpic_bam {
+	status = "okay";
+};
+
+&qpic_nand {
+	status = "okay";
+
+	flash@0 {
+		compatible = "spi-nand";
+		reg = <0>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		nand-ecc-engine = <&qpic_nand>;
+		nand-ecc-strength = <4>;
+		nand-ecc-step-size = <512>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "0:sbl1";
+				reg = <0x0 0x100000>;
+				read-only;
+			};
+
+			partition@100000 {
+				label = "0:sbl1_1";
+				reg = <0x100000 0x100000>;
+				read-only;
+			};
+
+			partition@200000 {
+				label = "0:mibib";
+				reg = <0x200000 0x100000>;
+				read-only;
+			};
+
+			partition@300000 {
+				label = "0:bootconfig";
+				reg = <0x300000 0x80000>;
+				read-only;
+			};
+
+			partition@380000 {
+				label = "0:bootconfig1";
+				reg = <0x380000 0x80000>;
+				read-only;
+			};
+
+			partition@400000 {
+				label = "0:qsee";
+				reg = <0x400000 0x200000>;
+				read-only;
+			};
+
+			partition@600000 {
+				label = "0:qsee_1";
+				reg = <0x600000 0x200000>;
+				read-only;
+			};
+
+			partition@800000 {
+				label = "0:devcfg";
+				reg = <0x800000 0x80000>;
+				read-only;
+			};
+
+			partition@880000 {
+				label = "0:devcfg_1";
+				reg = <0x880000 0x80000>;
+				read-only;
+			};
+
+			partition@900000 {
+				label = "0:tme";
+				reg = <0x900000 0x80000>;
+				read-only;
+			};
+
+			partition@980000 {
+				label = "0:tme_1";
+				reg = <0x980000 0x80000>;
+				read-only;
+			};
+
+			partition@a00000 {
+				label = "0:cdt";
+				reg = <0xa00000 0x80000>;
+				read-only;
+			};
+
+			partition@a80000 {
+				label = "0:cdt_1";
+				reg = <0xa80000 0x80000>;
+				read-only;
+			};
+
+			partition@b00000 {
+				label = "0:appsblenv";
+				reg = <0xb00000 0x80000>;
+			};
+
+			partition@b80000 {
+				label = "0:appsbl";
+				reg = <0xb80000 0x100000>;
+				read-only;
+			};
+
+			partition@c80000 {
+				label = "0:appsbl_1";
+				reg = <0xc80000 0x100000>;
+				read-only;
+			};
+
+			partition@d80000 {
+				label = "0:training";
+				reg = <0xd80000 0x80000>;
+				read-only;
+			};
+
+			partition@e00000 {
+				label = "0:art";
+				reg = <0xe00000 0x200000>;
+				read-only;
+
+				/*
+				 * MAC addresses live at the very start of "0:art",
+				 * two consecutive 6-byte entries, matching the
+				 * layout the same-vendor ipq5018 boards use
+				 * (cf. ipq5018-ax6000.dts's macaddr@0/macaddr@6).
+				 *
+				 * Which entry belongs to which port was confirmed
+				 * on real hardware rather than assumed: the first
+				 * 16 bytes of /dev/mtdblock17 were read out and
+				 * compared against the vendor devicetree's own
+				 * per-port assignment. Offset 0x0 matches the MAC
+				 * vendor gives "dp2" (qcom,id = <2>, the port
+				 * carrying qcom,phy-mdio-addr = <0x0c>, i.e. WAN),
+				 * and offset 0x6 matches the one vendor gives
+				 * "dp1" (qcom,id = <1>, no phy, i.e. the YT9215S
+				 * switch uplink / LAN). Note this is the opposite
+				 * order from ipq5018-ax6000.dts, where offset 0 is
+				 * the LAN MAC -- so it cannot be assumed, and was
+				 * measured.
+				 *
+				 * A third MAC follows at offset 0xc (presumably
+				 * WiFi); it is left undeclared until a radio
+				 * actually needs it.
+				 */
+				nvmem-layout {
+					compatible = "fixed-layout";
+					#address-cells = <1>;
+					#size-cells = <1>;
+
+					mac_addr_wan: macaddr@0 {
+						reg = <0x0 0x6>;
+					};
+
+					mac_addr_lan: macaddr@6 {
+						reg = <0x6 0x6>;
+					};
+				};
+			};
+
+			partition@1000000 {
+				label = "0:license";
+				reg = <0x1000000 0x40000>;
+				read-only;
+			};
+
+			partition@1040000 {
+				label = "rootfs";
+				reg = <0x1040000 0x2a00000>;
+			};
+
+			partition@3a40000 {
+				label = "rootfs_1";
+				reg = <0x3a40000 0x2a00000>;
+			};
+
+			partition@6440000 {
+				label = "bdata";
+				reg = <0x6440000 0x80000>;
+			};
+
+			partition@64c0000 {
+				label = "crash";
+				reg = <0x64c0000 0x80000>;
+			};
+
+			partition@6540000 {
+				label = "overlay";
+				reg = <0x6540000 0x1ac0000>;
+			};
+		};
+	};
+};
+
+&mdio {
+	status = "okay";
+
+	/*
+	 * gpio25 is the QCA8081's hardware reset line on this board, not mdc0.
+	 * ipq5332.dtsi's mdio0_pins muxes gpio25 to mdc0 as a reference-design
+	 * default, but this board wires MDIO on mdc1/mdio1 (gpio27/28); leaving
+	 * gpio25 on mdc0 clocks every MDIO transaction into the PHY reset pin
+	 * and holds the PHY in reset. The mdio0_pins override below pins gpio25
+	 * to plain GPIO. Only the WAN PHY (QCA8081 at 0x0c) needs a node; the
+	 * LAN side is a PHY-less 2.5G fixed-link.
+	 */
+	phy0: ethernet-phy@c {
+		reg = <0x0c>;
+	};
+
+};
+
+/*
+ * Override ipq5332.dtsi's mdio0_pins: hold gpio25 as a plain GPIO
+ * (not mdc0) permanently, matching vendor's measured hardware state
+ * exactly (func0/4mA/pull-up). gpio26 stays the mdio0 data line but at
+ * vendor's measured 4mA (was the dtsi default of 8mA).
+ */
+&mdio0_pins {
+	mux_0 {
+		function = "gpio";
+		drive-strength = <4>;
+		bias-pull-up;
+	};
+
+	mux_1 {
+		drive-strength = <4>;
+	};
+};
+
+/*
+ * Override ipq5332.dtsi's mdio1_pins to match vendor's measured
+ * electrical values on the real MDIO bus (gpio27/28): 4mA instead of the
+ * dtsi default 8mA, and mdc1 (gpio27) pulled up instead of bias-disable.
+ */
+&mdio1_pins {
+	mux_0 {
+		drive-strength = <4>;
+		bias-pull-up;
+	};
+
+	mux_1 {
+		drive-strength = <4>;
+	};
+};
+
+&qcom_ppe {
+	status = "okay";
+
+	ethernet-ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/*
+		 * LAN: the YT9215S switch uplink. Vendor's own DT puts the
+		 * PHY-less, forced-2500M link on PPE port 1
+		 * (qcom,port_phyinfo/port@0: port_id=<1>, forced-speed=<0x9c4>,
+		 * forced-duplex=<1>, and no phy_address), and marks port 1 as
+		 * LAN (switch_lan_bmp=<0x02> = BIT(1)). Both uniphys are set to
+		 * the same mac_mode (switch_mac_mode = switch_mac_mode1 =
+		 * <0x0c>), so both links run at the same 2.5G rate -- hence
+		 * 2500base-x with a 2500M fixed-link, not sgmii/1000M.
+		 */
+		port@1 {
+			reg = <1>;
+			phy-mode = "2500base-x";
+			label = "lan";
+			pcs-handle = <&pcs0_ch0>;
+			nvmem-cells = <&mac_addr_lan 0>;
+			nvmem-cell-names = "mac-address";
+			clocks = <&nsscc NSS_CC_PORT1_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT1_RX_CLK>,
+				 <&nsscc NSS_CC_PORT1_TX_CLK>;
+			clock-names = "mac",
+				      "rx",
+				      "tx";
+			resets = <&nsscc NSS_CC_PORT1_MAC_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT1_RX_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT1_TX_CLK_ARES>;
+			reset-names = "mac",
+				      "rx",
+				      "tx";
+
+			fixed-link {
+				speed = <2500>;
+				full-duplex;
+			};
+		};
+
+		/*
+		 * WAN: the QCA8081 at mdio address 0x0c. Vendor's DT attaches
+		 * it to PPE port 2, not port 1 (qcom,port_phyinfo/port@1:
+		 * port_id=<2>, phy_address=<0x0c>, sec_phy_address=<0x07>), and
+		 * marks port 2 as WAN (switch_wan_bmp=<0x04> = BIT(2)). The
+		 * vendor's nss-dp netdevs agree: dp2 (qcom,id=<2>) is the one
+		 * carrying qcom,phy-mdio-addr=<0x0c> and qcom,link-poll=<1>,
+		 * while dp1 (qcom,id=<1>) has no phy and no link polling.
+		 *
+		 * Note the device at mdio address 0x07 is not a plain PHY --
+		 * confirmed live via U-Boot (mii read 0x7 0/2/3 all return
+		 * 0xffff, not a valid Clause-22 response): it is the Motorcomm
+		 * YT9215S managed switch ("YT9215S init done" in every boot's
+		 * U-Boot log; vendor kallsyms show a dedicated yt_switch.ko with
+		 * its own miwifi_mdio_read/write). Vendor lists it here only as
+		 * sec_phy_address; mainline has no driver for it, so it is left
+		 * out and the switch uplink is described by port@1's fixed-link.
+		 */
+		port@2 {
+			reg = <2>;
+			phy-mode = "2500base-x";
+			label = "wan";
+			phy-handle = <&phy0>;
+			pcs-handle = <&pcs1_ch0>;
+			nvmem-cells = <&mac_addr_wan 0>;
+			nvmem-cell-names = "mac-address";
+			clocks = <&nsscc NSS_CC_PORT2_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT2_RX_CLK>,
+				 <&nsscc NSS_CC_PORT2_TX_CLK>;
+			clock-names = "mac",
+				      "rx",
+				      "tx";
+			resets = <&nsscc NSS_CC_PORT2_MAC_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT2_RX_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT2_TX_CLK_ARES>;
+			reset-names = "mac",
+				      "rx",
+				      "tx";
+		};
+	};
+};
+
+/*
+ * pcs0/pcs1 consume GCC_UNIPHY_SYS_CLK_SRC (24 MHz off XO). Pin its rate
+ * explicitly: the RCG has a single-entry frequency table and is not
+ * otherwise assigned a rate.
+ */
+&pcs0 {
+	status = "okay";
+	assigned-clocks = <&gcc GCC_UNIPHY_SYS_CLK_SRC>;
+	assigned-clock-rates = <24000000>;
+};
+
+&pcs1 {
+	status = "okay";
+	assigned-clocks = <&gcc GCC_UNIPHY_SYS_CLK_SRC>;
+	assigned-clock-rates = <24000000>;
+};
+
+&pwm {
+	pinctrl-0 = <&pwm_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&tlmm {
+	button_pins: button-state {
+		reset-pins {
+			pins = "gpio43";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-pull-up;
+		};
+	};
+
+	pwm_pins: pwm-state {
+		pwm1-pins {
+			pins = "gpio31";
+			function = "pwm1";
+			drive-strength = <8>;
+		};
+
+		pwm2-pins {
+			pins = "gpio30";
+			function = "pwm2";
+			drive-strength = <8>;
+		};
+	};
+};

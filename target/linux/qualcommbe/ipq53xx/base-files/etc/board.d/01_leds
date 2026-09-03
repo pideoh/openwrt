@@ -12,6 +12,16 @@ case "$board" in
 ubnt,u7-pro-xgs)
 	ucidef_set_led_wlan "wifi" "wifi" "blue:wlan" "phy0radio"
 	;;
+xiaomi,be3600-pro)
+	# Vendor DT models the status indicator as a single custom "pwm-rgb"
+	# node with two PWM channels (group1: orange + blue -- a bi-color LED,
+	# not a true 3-channel RGB LED, and not a single white LED). The DTS
+	# exposes these as two "pwm-leds" children (LED_FUNCTION_STATUS with
+	# LED_COLOR_ID_ORANGE / LED_COLOR_ID_BLUE), which the kernel's default
+	# led-class naming composes as "orange:status" / "blue:status".
+	ucidef_set_led_default "status_orange" "orange:status" "orange:status" "0"
+	ucidef_set_led_default "status_blue" "blue:status" "blue:status" "0"
+	;;
 esac
 
 board_config_flush

@@ -14,6 +14,17 @@ ipq53xx_setup_interfaces()
 	ubnt,u7-pro-xgs)
 		ucidef_set_interface_lan "lan"
 		;;
+	xiaomi,be3600-pro)
+		# Vendor DT has a 2-port PPE switch: dp1 (qcom,id = 1) is WAN,
+		# dp2 (qcom,id = 2) is LAN. ipq5332-be3600-pro.dts labels those dp nodes
+		# "wan"/"lan" (singular, no trailing digit). For boards with
+		# exactly one LAN and one WAN port, that's the prevailing
+		# convention across board.d/02_network (this file's own
+		# ubnt,u7-pro-xgs case, and single-LAN cases in qualcommax's
+		# ipq50xx/ipq807x/ipq60xx) -- lanN/wanN numbering is only used
+		# when there are multiple LAN (or WAN) ports to enumerate.
+		ucidef_set_interfaces_lan_wan "lan" "wan"
+		;;
 	*)
 		echo "Unsupported hardware. Network interfaces not initialized"
 		;;
